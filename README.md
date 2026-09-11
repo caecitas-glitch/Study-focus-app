@@ -1,93 +1,58 @@
-﻿# 🎯 FocusFlow — Deep Work & Study Productivity Engine
+# FocusFlow
 
-> A high-leverage Windows desktop focus companion engineered for deep work, university course tracking, and elimination of digital distractions.
+A distraction-blocking study timer for Windows that I built to stay on top of university deadlines and actually get deep work done.
 
----
-
-## ⚡ Key Features
-
-### 🛡️ System-Level Distraction Shield
-- **Website Blocking**: Instantly blocks social media, video feeds, and custom distraction sites during focus sessions via safe hosts filtering.
-- **Application Blocker**: Silences game launchers (Steam, Discord, Tarkov, VR runtimes, etc.) to keep you locked in.
-- **Emergency Emerge**: Need an emergency breakout? Face a penalty timer and mental math puzzle to verify intentional exits.
-- **Hall Pass Micro-Breaks**: Take a timed 3-minute biological break without aborting your session or dropping your flow.
-
-### ⏳ Interactive Drag Timer & Visual Clock
-- **Smooth Radial Dragging**: Seamlessly set session durations from 5-minute *Zeigarnik* micro-commitments to multi-hour deep study sprints.
-- **Stealth Peek Mode**: Hover to preview remaining time without constant clock-watching anxiety.
-- **Clock-Check Audit**: Tracks how many times you checked the clock during a session to measure attention wandering.
-
-### 🔥 Flow State Momentum Booster
-- When your focus timer rings, don't let artificial breaks kill your momentum.
-- Opt into **Overtime Boost** (1.25x / 1.5x reward multipliers) to ride your natural cognitive flow.
-
-### 📅 Live Moodle & iCal Calendar Sync
-- **Subscription URL Support**: Point to your university's iCal/webcal feed (Moodle, Canvas, Blackboard, Google Calendar) for automatic sync.
-- **Smart Deadline Tracking**: Detects rescheduled assignments, auto-updates due dates without duplicates, and recommends tailored study durations.
-- **Batch Management**: Mark attendance (*Läsnäolo*) or completed assignments with 1 click so they never clutter upcoming urgency alerts.
-
-### 📝 End-of-Session Reflection & Productivity Survey
-- Quantify your study sessions with a scientific friction and focus audit:
-  - Work Type (Deep Problem Solving, Memorization, Writing, etc.)
-  - Starting Friction & Trigger Analysis
-  - Distraction Audit (Phone, Tabs, Environment)
-  - Physical Calibration (Caffeine, Sleep, Pacing)
-- **1-Click Export**: Format your reflection cleanly for personal study logs, Notion, or journal archives.
-
-### 🏆 Gamified Progression & Real-Life Rewards
-- **Tiered Rewards**: Unlock real-life treats you define (e.g., Apprentice at 120m, Master at 300m, Apex Scholar at 1000m).
-- **Study Streaks & Badges**: Build momentum with consecutive study days and earn milestone achievements.
-- **Course Targets**: Set custom hour goals across specific subjects and watch your progress bars advance.
-
-### 🌧️ Distraction-Free Audio
-- Built-in soothing rain synthesizer, classical focus compositions, and a distraction-free custom YouTube stream player (embed mode with zero recommendations or comment feeds).
+Instead of just ringing a bell like standard Pomodoro apps, it aggressively blocks websites and games at the system level, syncs directly with your university Moodle calendar, and lets you set real-life rewards for hitting study goals.
 
 ---
 
-## 🚀 Getting Started
+## Features
 
-### Pre-built Executable (Recommended for Testers)
-1. Download the latest ocus_app.exe from the [Releases](https://github.com/) tab.
-2. Place ocus_app.exe into a dedicated folder (e.g., C:\FocusApp\ or your desktop).
-3. **Run as Administrator** (required for the website and process distraction blocker to modify system host bindings).
-4. All your personal metrics, streaks, and settings are saved automatically in a local ocus_data.json file in the same folder.
+- **Hardcore Distraction Blocker**: Modifies your Windows hosts file to block distracting sites (YouTube, Reddit, Twitch, Twitter/X, Netflix, etc.) and kills game launchers (Steam, Discord, Tarkov, VR runtimes).
+- **Emergency Emerge**: If you really need to break out early, there is a penalty timer and a math puzzle to stop impulse tab-opening.
+- **Hall Pass**: Need a quick glass of water or a bathroom break? Take a 3-minute timed pause without failing the session.
+- **Interactive Radial Timer**: Drag the analog clock hand to dial in whatever time you want, from a quick 5-minute warm-up to a 2-hour deep session.
+- **Flow Momentum Overtime**: If you're in the zone when the timer hits zero, don't stop. Opt into overtime to keep riding the momentum with extra reward points.
+- **Moodle & iCal Sync**: Paste your university calendar export link (`webcal://` or `https://`). It automatically imports your upcoming deadlines, detects when professors push dates back, and lets you batch-mark attendance (*Läsnäolo*) so it doesn't clutter your urgent tasks.
+- **Post-Session Reflection**: Logs friction levels, distraction triggers, and how many times you checked the clock during your session. Generates clean notes you can copy-paste into your study journal or Notion.
+- **Real-Life Milestone Rewards**: Set your own rewards for hitting milestone hours (e.g. Apprentice at 2h = protein ice cream, Master at 5h = Burger King).
+- **Background Sound**: Built-in rain sounds, classical tracks, or an embedded YouTube audio player with zero recommendations or comments.
+- **Built-in Auto-Updater**: Checks GitHub Releases on startup and updates itself with one click.
 
 ---
 
-## 🛠️ Building from Source
+## Download & Usage
 
-### Prerequisites
-- Windows 10 or 11 (64-bit)
-- Python 3.10+ (Recommended Python 3.12 - 3.14)
+1. Download **`focus_app.exe`** from the [Releases](https://github.com/caecitas-glitch/Study-focus-app/releases/latest) page.
+2. Put `focus_app.exe` in its own folder (like `C:\FocusFlow\` or on your Desktop).
+3. **Right-click -> Run as Administrator**.  
+   *(Admin rights are strictly required to edit the Windows hosts file during a session to block websites and restore them when done).*
 
-### Setup & Run
-`ash
+All your study history, tags, deadlines, and streak count are stored locally in a `focus_data.json` file in the same folder. Nothing is sent to any external server.
+
+---
+
+## Running from Source
+
+If you want to run or modify the Python code directly:
+
+```bash
 # Clone the repository
-git clone https://github.com/your-username/focus-app.git
-cd focus-app
+git clone https://github.com/caecitas-glitch/Study-focus-app.git
+cd Study-focus-app
 
-# (Optional) Install psutil for enhanced process management
-pip install psutil
-
-# Run directly
+# Run the app (requires Python 3.10+)
 python Focus_app.pyw
-`
+```
 
-### Compiling to Standalone .exe
-`ash
+### Compiling to an .exe
+```bash
 pip install pyinstaller
-pyinstaller --noconfirm focus_app.spec
-`
-The compiled standalone executable will be located in the dist/ directory.
+python -m PyInstaller --noconfirm focus_app.spec
+```
+The output executable will be generated in `dist/focus_app.exe`.
 
 ---
 
-## 🔒 Privacy & Safety
-- **100% Local**: No telemetry, no external database, no login credentials required.
-- **Safe Hosts Cleanup**: The app uses strict boundary markers in Windows hosts files and automatically cleans up all block rules on application exit or shutdown.
-- **Personal Data**: Your study notes, reflections, and calendar tokens stay strictly on your local machine (ocus_data.json).
-
----
-
-## 📄 License
-MIT License. Free to use, adapt, and study.
+## License
+MIT License. Feel free to use, modify, or fork.
