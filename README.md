@@ -13,9 +13,9 @@ Instead of just ringing a bell like standard Pomodoro apps, it aggressively bloc
 - **Hall Pass**: Need a quick glass of water or a bathroom break? Take a 3-minute timed pause without failing the session.
 - **Interactive Radial Timer**: Drag the analog clock hand to dial in whatever time you want, from a quick 5-minute warm-up to a 2-hour deep session.
 - **Flow Momentum Overtime**: If you're in the zone when the timer hits zero, don't stop. Opt into overtime to keep riding the momentum with extra reward points.
-- **Moodle & iCal Sync**: Paste your university calendar export link (`webcal://` or `https://`). It automatically imports your upcoming deadlines, detects when professors push dates back, and lets you batch-mark attendance (*Läsnäolo*) so it doesn't clutter your urgent tasks.
+- **Moodle & iCal Sync**: Paste your university calendar export link (`webcal://` or `https://`). It automatically imports your upcoming deadlines, detects when professors push dates back, and lets you batch-mark recurring attendance / lecture sessions so they don't clutter your urgent tasks.
 - **Post-Session Reflection**: Logs friction levels, distraction triggers, and how many times you checked the clock during your session. Generates clean notes you can copy-paste into your study journal or Notion.
-- **Real-Life Milestone Rewards**: Set your own rewards for hitting milestone hours (e.g. Apprentice at 2h = protein ice cream, Master at 5h = Burger King).
+- **Real-Life Milestone Rewards**: Set your own rewards for hitting milestone hours (e.g. Tier 1 at 2h = coffee break, Tier 3 at 5h = movie or gaming night).
 - **Background Sound**: Built-in rain sounds, classical tracks, or an embedded YouTube audio player with zero recommendations or comments.
 - **Built-in Auto-Updater**: Checks GitHub Releases on startup and updates itself with one click.
 
