@@ -21,6 +21,25 @@ Instead of just ringing a bell like standard Pomodoro apps, it aggressively bloc
 
 ---
 
+## Customization
+
+FocusFlow is designed to adapt to your actual study setup and habits rather than forcing a rigid system:
+
+- **Custom Website & App Blocklists**:
+  Open the **Blocker** tab in Settings to add or remove sites and desktop applications. You can add any URL to block via the Windows hosts file, or add any process name (`.exe`) to block games and launchers from running while you study.
+- **Course Tags & Weekly Targets**:
+  Set up custom `#tags` for your courses or projects (e.g. `#Calculus`, `#DataStructures`, `#Thesis`). In the **Analytics** tab, you can assign weekly study hour goals to each tag so you can see if you're balancing your coursework or neglecting a difficult class.
+- **Custom Milestone Rewards**:
+  In the **Rewards** tab, customize both the time thresholds and the rewards. You set what each tier gives you (e.g., 2 hours = favorite snack, 5 hours = gaming night guilt-free). The app tracks your cumulative focus time toward the next unlock.
+- **Custom Audio & Lo-Fi Streams**:
+  Switch between offline looping rain, classical piano tracks, or paste any YouTube link (such as a 24/7 lofi hip hop or synthwave stream). FocusFlow embeds the video directly without comments, recommended sidebars, or homepage algorithms.
+- **Pre-Designated Lock-in Sessions**:
+  Schedule a study session ahead of time (choose the date, duration, and subject tag). The next time you open the app on that day, it automatically presents your planned session so you can jump straight in without decision fatigue.
+- **Plain JSON Configuration**:
+  All settings, blocklists, deadlines, and study history are stored in a standard `focus_data.json` file next to the app. You can back it up, move it to another PC, or inspect it anytime.
+
+---
+
 ## Download & Usage
 
 1. Download **`focus_app.exe`** from the [Releases](https://github.com/caecitas-glitch/Study-focus-app/releases/latest) page.
