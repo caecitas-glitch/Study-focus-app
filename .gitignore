@@ -1,0 +1,22 @@
+﻿# Personal user data & study logs (contains private calendar tokens, streak, and history)
+focus_data.json
+focus_data.json.bak
+*.log
+
+# Python bytecode & cache
+__pycache__/
+*.py[cod]
+*$py.class
+
+# PyInstaller build outputs
+build/
+dist/
+*.spec
+
+# Temporary testing & scratch scripts
+scratch/
+test_*.wav
+
+# IDE settings
+.vscode/
+.idea/
