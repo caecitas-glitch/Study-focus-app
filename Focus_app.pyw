@@ -18,7 +18,16 @@ import threading
 from datetime import datetime, timedelta, date
 from collections import Counter
 
+# --- Application Info & Versioning ---
+APP_VERSION = "1.0.1"
+GITHUB_REPO = "caecitas-glitch/Study-focus-app"
+
+def parse_version_str(v_str):
+    nums = re.findall(r'\d+', str(v_str))
+    return tuple(map(int, nums)) if nums else (0,)
+
 # --- Directory & Environment Helper ---
+
 def get_app_dir():
     if getattr(sys, 'frozen', False):
         return os.path.dirname(os.path.abspath(sys.executable))
@@ -951,6 +960,25 @@ class SettingsWindow(tk.Toplevel):
         notebook.add(block_tab, text="Blocker")
         self.setup_blocker_tab(block_tab)
 
+        # Bottom Bar: Version & Auto-Update Check
+        bottom_bar = tk.Frame(self, bg="#121212")
+        bottom_bar.pack(fill=tk.X, padx=14, pady=(0, 10))
+        tk.Label(bottom_bar, text=f"FocusFlow v{APP_VERSION}", font=("Segoe UI", 8), bg="#121212", fg="#777777").pack(side=tk.LEFT)
+        tk.Button(
+            bottom_bar,
+            text="🔄 Check for Updates",
+            font=("Segoe UI", 8, "bold"),
+            bg="#1f1f1f",
+            fg="#00bcd4",
+            activebackground="#2a2a2a",
+            activeforeground="#00bcd4",
+            relief="flat",
+            padx=8,
+            pady=2,
+            command=lambda: self.app.check_for_updates(silent=False)
+        ).pack(side=tk.RIGHT)
+
+
     # --- Tab 1: Analytics, Weekly Heatmap & Course Balance ---
     def setup_analytics_tab(self, frame):
         tk.Label(frame, text="📊 Focus Analytics & Study Breakdown", font=("Segoe UI", 10, "bold"), bg="#121212", fg="#00bcd4").pack(anchor="w", pady=(8, 2), padx=10)
@@ -1839,6 +1867,7 @@ class FocusApp:
         else:
             self.root.after(400, self.check_pre_designated_session)
             self.root.after(1000, self.auto_check_upcoming_deadlines)
+            self.root.after(3500, lambda: self.check_for_updates(silent=True))
 
     def auto_sync_ical_subscription(self):
         if not self.ical_subscription_url:
@@ -1855,6 +1884,109 @@ class FocusApp:
                         self.root.after(0, self.update_imminent_deadline_banner)
         except Exception:
             pass
+
+    # --- GitHub Auto-Updater ---
+    def check_for_updates(self, silent=True):
+        def _worker():
+            try:
+                url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+                req = urllib.request.Request(url, headers={"User-Agent": "FocusFlow-Updater"})
+                with urllib.request.urlopen(req, timeout=8) as resp:
+                    data = json.loads(resp.read().decode())
+
+                remote_tag = data.get("tag_name", "")
+                remote_ver = parse_version_str(remote_tag)
+                local_ver = parse_version_str(APP_VERSION)
+
+                if remote_ver > local_ver:
+                    exe_asset = None
+                    for a in data.get("assets", []):
+                        if a.get("name", "").lower().endswith(".exe"):
+                            exe_asset = a
+                            break
+                    if exe_asset:
+                        dl_url = exe_asset["browser_download_url"]
+                        body = data.get("body", "").strip()
+                        body_txt = f"\n\nRelease Notes:\n{body[:350]}" if body else ""
+                        msg = f"A new version of FocusFlow ({remote_tag}) is available!{body_txt}\n\nWould you like to download and install the update now?"
+                        self.root.after(0, lambda: self.prompt_download_update(remote_tag, dl_url, msg))
+                    elif not silent:
+                        self.root.after(0, lambda: messagebox.showinfo("Update Available", f"Version {remote_tag} is available on GitHub, but no .exe asset was found in the release."))
+                elif not silent:
+                    self.root.after(0, lambda: messagebox.showinfo("Up to Date ✓", f"FocusFlow is up to date (version {APP_VERSION})."))
+            except Exception as ex:
+                if not silent:
+                    self.root.after(0, lambda: messagebox.showerror("Update Check Failed", f"Could not check for updates:\n{ex}"))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def prompt_download_update(self, tag, dl_url, msg):
+        if messagebox.askyesno("Update Available 🚀", msg):
+            self.download_and_apply_update(dl_url, tag)
+
+    def download_and_apply_update(self, dl_url, tag):
+        prog_win = tk.Toplevel(self.root)
+        prog_win.title("Updating FocusFlow")
+        prog_win.geometry("380x140")
+        prog_win.configure(bg="#121212")
+        prog_win.resizable(False, False)
+        prog_win.transient(self.root)
+        prog_win.grab_set()
+
+        tk.Label(prog_win, text=f"Downloading FocusFlow {tag}...", font=("Segoe UI", 10, "bold"), bg="#121212", fg="#00bcd4").pack(pady=(18, 8))
+        status_lbl = tk.Label(prog_win, text="Starting download...", font=("Segoe UI", 8), bg="#121212", fg="#aaaaaa")
+        status_lbl.pack(pady=4)
+
+        pbar = ttk.Progressbar(prog_win, orient="horizontal", length=320, mode="determinate")
+        pbar.pack(pady=10)
+
+        def _download_task():
+            try:
+                app_dir = get_app_dir()
+                target_exe = sys.executable if getattr(sys, 'frozen', False) else os.path.join(app_dir, "focus_app.exe")
+                temp_exe = os.path.join(app_dir, "focus_app_new.exe")
+
+                req = urllib.request.Request(dl_url, headers={"User-Agent": "FocusFlow-Updater"})
+                with urllib.request.urlopen(req, timeout=45) as response:
+                    total_size = int(response.headers.get('content-length', 0))
+                    downloaded = 0
+                    chunk_size = 65536
+                    with open(temp_exe, "wb") as f:
+                        while True:
+                            chunk = response.read(chunk_size)
+                            if not chunk:
+                                break
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            if total_size > 0:
+                                pct = int((downloaded / total_size) * 100)
+                                mb_down = downloaded / (1024 * 1024)
+                                mb_tot = total_size / (1024 * 1024)
+                                prog_win.after(0, lambda p=pct, d=mb_down, t=mb_tot: (
+                                    pbar.config(value=p),
+                                    status_lbl.config(text=f"Downloaded {d:.1f} MB of {t:.1f} MB ({p}%)")
+                                ))
+
+                prog_win.after(0, lambda: status_lbl.config(text="Installing & restarting..."))
+                time.sleep(0.5)
+
+                bat_path = os.path.join(tempfile.gettempdir(), "focus_update_swap.bat")
+                bat_content = f"""@echo off
+timeout /t 1 /nobreak > nul
+move /y "{temp_exe}" "{target_exe}" > nul
+start "" "{target_exe}"
+del "%~f0"
+"""
+                with open(bat_path, "w", encoding="utf-8") as f:
+                    f.write(bat_content)
+
+                subprocess.Popen(["cmd.exe", "/c", bat_path], shell=False, creationflags=0x08000000 if os.name == 'nt' else 0)
+                self.root.after(200, lambda: (self.root.destroy(), sys.exit(0)))
+            except Exception as e:
+                prog_win.after(0, lambda: (prog_win.destroy(), messagebox.showerror("Update Failed", f"Failed to download update:\n{e}")))
+
+        threading.Thread(target=_download_task, daemon=True).start()
+
 
 
     def on_window_map(self, event):
