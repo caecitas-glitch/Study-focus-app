@@ -9,8 +9,8 @@ Instead of just ringing a bell like standard Pomodoro apps, it aggressively bloc
 ## Features
 
 - **Hardcore Distraction Blocker**: Modifies your Windows hosts file to block distracting sites (YouTube, Reddit, Twitch, Twitter/X, Netflix, etc.) and kills game launchers (Steam, Discord, Tarkov, VR runtimes).
-- **Emergency Emerge**: If you really need to break out early, there is a penalty timer and a math puzzle to stop impulse tab-opening.
-- **Hall Pass**: Need a quick glass of water or a bathroom break? Take a 3-minute timed pause without failing the session.
+- **Emergency Exit**: If you really need to break out early, you have to type out a full focus commitment statement verbatim to stop impulsive quitting.
+- **Hall Pass**: Need a quick glass of water or a bathroom break? Take a 5-minute timed pause without failing the session.
 - **Interactive Radial Timer**: Drag the analog clock hand to dial in whatever time you want, from a quick 5-minute warm-up to a 2-hour deep session.
 - **Flow Momentum Overtime**: If you're in the zone when the timer hits zero, don't stop. Opt into overtime to keep riding the momentum with extra reward points.
 - **Moodle & iCal Sync**: Paste your university calendar export link (`webcal://` or `https://`). It automatically imports your upcoming deadlines, detects when professors push dates back, and lets you batch-mark recurring attendance / lecture sessions so they don't clutter your urgent tasks.
