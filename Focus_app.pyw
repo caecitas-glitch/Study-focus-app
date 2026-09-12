@@ -19,7 +19,7 @@ from datetime import datetime, timedelta, date
 from collections import Counter
 
 # --- Application Info & Versioning ---
-APP_VERSION = "1.0.1"
+APP_VERSION = "1.0.2"
 GITHUB_REPO = "caecitas-glitch/Study-focus-app"
 
 def parse_version_str(v_str):
@@ -399,10 +399,10 @@ def merge_calendar_events(existing_deadlines, new_events):
 
 # --- Flow Momentum Overtime Modal ---
 class FlowMomentumWindow(tk.Toplevel):
-    def __init__(self, parent, base_minutes, on_select_boost, on_finish):
+    def __init__(self, parent, base_minutes, on_select_boost, on_finish, continuation_count=0, chain_total_minutes=None):
         super().__init__(parent)
         self.title("🔥 Ride the Flow State Momentum!")
-        self.geometry("440x380")
+        self.geometry("450x420")
         self.configure(bg="#0d0d15")
         self.resizable(False, False)
         self.transient(parent)
@@ -410,16 +410,31 @@ class FlowMomentumWindow(tk.Toplevel):
 
         self.on_select_boost = on_select_boost
         self.on_finish = on_finish
+        self.continuation_count = continuation_count
+        chain_total = chain_total_minutes if chain_total_minutes is not None else base_minutes
 
-        tk.Label(self, text="🔥 You're in a Flow State!", font=("Segoe UI", 13, "bold"), bg="#0d0d15", fg="#ff9800").pack(pady=(16, 2))
-        tk.Label(self, text=f"Completed {base_minutes} mins. Extend now for a Reward Tier Boost:", font=("Segoe UI", 8), bg="#0d0d15", fg="#cccccc").pack(pady=(0, 10))
-
-        if base_minutes >= 75:
-            options = [(20, 1.20), (30, 1.28), (45, 1.33), (60, 1.40)]
-        elif base_minutes >= 45:
-            options = [(15, 1.15), (30, 1.25), (45, 1.30), (60, 1.35)]
+        next_continue_num = continuation_count + 1
+        if next_continue_num == 1:
+            stage_title = "🔥 Ride the Flow State! (Continue #1)"
+            stage_desc = f"Completed {base_minutes}m. Extend your flow state for a Reward Tier Boost:"
+        elif next_continue_num == 2:
+            stage_title = "⚡ Double Continue Active! (Continue #2)"
+            stage_desc = f"In the zone! {chain_total}m completed so far. Add a Double Continue:"
         else:
-            options = [(15, 1.12), (25, 1.18), (30, 1.20), (45, 1.25)]
+            stage_title = "🚀 Triple Continue! (Final Extension #3)"
+            stage_desc = f"Peak momentum! {chain_total}m total so far. Final Triple Continue:"
+
+        tk.Label(self, text=stage_title, font=("Segoe UI", 12, "bold"), bg="#0d0d15", fg="#ff9800").pack(pady=(16, 2))
+        tk.Label(self, text=stage_desc, font=("Segoe UI", 8), bg="#0d0d15", fg="#cccccc", wraplength=410).pack(pady=(0, 10))
+
+        # Scaling bonus multiplier for deeper continuation chains
+        bonus_adder = 0.05 * continuation_count
+        if base_minutes >= 75:
+            options = [(20, round(1.20 + bonus_adder, 2)), (30, round(1.28 + bonus_adder, 2)), (45, round(1.33 + bonus_adder, 2)), (60, round(1.40 + bonus_adder, 2))]
+        elif base_minutes >= 45:
+            options = [(15, round(1.15 + bonus_adder, 2)), (30, round(1.25 + bonus_adder, 2)), (45, round(1.30 + bonus_adder, 2)), (60, round(1.35 + bonus_adder, 2))]
+        else:
+            options = [(15, round(1.12 + bonus_adder, 2)), (25, round(1.18 + bonus_adder, 2)), (30, round(1.20 + bonus_adder, 2)), (45, round(1.25 + bonus_adder, 2))]
 
         btn_container = tk.Frame(self, bg="#0d0d15")
         btn_container.pack(fill=tk.BOTH, expand=True, padx=25)
@@ -438,7 +453,8 @@ class FlowMomentumWindow(tk.Toplevel):
             btn = tk.Button(row, text="Select", font=("Segoe UI", 8, "bold"), bg="#00bcd4", fg="black", relief="flat", padx=10, command=lambda m=mins, x=mult: self.choose(m, x))
             btn.pack(side=tk.RIGHT, padx=10)
 
-        finish_btn = tk.Button(self, text="✓ Finish Session (No Boost)", font=("Segoe UI", 8), bg="#222222", fg="#888888", relief="flat", pady=4, command=self.finish)
+        finish_txt = f"✓ Finish Session ({chain_total}m Total — No More Boosts)" if continuation_count > 0 else "✓ Finish Session (No Boost)"
+        finish_btn = tk.Button(self, text=finish_txt, font=("Segoe UI", 8, "bold"), bg="#222222", fg="#aaaaaa", relief="flat", pady=6, padx=12, command=self.finish)
         finish_btn.pack(pady=12)
 
         self.protocol("WM_DELETE_WINDOW", self.finish)
@@ -488,9 +504,16 @@ class PostSessionReflectionWindow(tk.Toplevel):
         mins = self.session_info.get("minutes", 0)
         subj = self.session_info.get("subject", "#General")
         checks = self.session_info.get("clock_checks", 0)
+        c_count = self.session_info.get("continuation_count", 0)
         chip_f = tk.Frame(self, bg="#161624", highlightbackground="#2d2d3f", highlightthickness=1)
         chip_f.pack(fill=tk.X, padx=16, pady=(4, 6))
-        tk.Label(chip_f, text=f"⏱️ Focused: {mins} mins  •  🏷️ Course: {subj}  •  👀 Clock Checks: {checks}", font=("Segoe UI", 8, "bold"), bg="#161624", fg="#ff9800").pack(pady=4)
+
+        if c_count > 0:
+            c_label = "Double Continued (x2)" if c_count == 2 else ("Triple Continued (x3)" if c_count >= 3 else "Continued (x1)")
+            chip_txt = f"⏱️ Focused: {mins} mins ({c_label})  •  🏷️ Course: {subj}  •  🔒 Clock Checks: {checks}"
+        else:
+            chip_txt = f"⏱️ Focused: {mins} mins (Single Session)  •  🏷️ Course: {subj}  •  🔒 Clock Checks: {checks}"
+        tk.Label(chip_f, text=chip_txt, font=("Segoe UI", 8, "bold"), bg="#161624", fg="#ff9800").pack(pady=4)
 
         # Scrollable container
         container = tk.Frame(self, bg="#0d0d15")
@@ -597,12 +620,16 @@ class PostSessionReflectionWindow(tk.Toplevel):
 
         # --- Q7: Notes & Obstacles ---
         self.build_section_header("7. Notes & Obstacles:")
+        
+        # Tamper-proof Verified Clock Checks Row (Non-editable, cannot be deleted or cheated)
+        lock_color = "#4CAF50" if checks == 0 else ("#ff9800" if checks <= 2 else "#f44336")
+        lock_txt = "🔒 Verified Clock Checks: 0 (Pure focus — zero clock watching)" if checks == 0 else f"🔒 Verified Clock Checks: {checks} time(s) (Clock revealed during session • Locked)"
+        lock_box = tk.Frame(self.scroll_body, bg="#14141e", highlightbackground=lock_color, highlightthickness=1)
+        lock_box.pack(fill=tk.X, pady=(0, 5))
+        tk.Label(lock_box, text=lock_txt, font=("Segoe UI", 8, "bold"), bg="#14141e", fg=lock_color).pack(anchor="w", padx=8, pady=4)
+
         self.notes_text = tk.Text(self.scroll_body, height=3, bg="#1a1a26", fg="#ffffff", insertbackground="white", font=("Segoe UI", 8), relief="flat", highlightbackground="#2d2d3f", highlightthickness=1)
         self.notes_text.pack(fill=tk.X, pady=(0, 6))
-        if checks == 0:
-            self.notes_text.insert("1.0", "⏱️ Clock checks: 0 (Pure focus - zero clock watching)\n")
-        else:
-            self.notes_text.insert("1.0", f"⏱️ Clock checks: {checks} time(s)\n")
 
         # Action Buttons (Fixed Footer)
         act_f = tk.Frame(self, bg="#0d0d15")
@@ -684,6 +711,7 @@ class PostSessionReflectionWindow(tk.Toplevel):
             "caffeine": self.caffeine_var.get(),
             "sleep": self.sleep_var.get(),
             "clock_checks": self.session_info.get("clock_checks", 0),
+            "continuation_count": self.session_info.get("continuation_count", 0),
             "pacing": self.pacing_var.get(),
             "notes": self.notes_text.get("1.0", tk.END).strip(),
             "recorded_at": datetime.now().strftime("%Y-%m-%d %H:%M")
@@ -694,10 +722,19 @@ class PostSessionReflectionWindow(tk.Toplevel):
         mins = self.session_info.get("minutes", 0)
         subj = self.session_info.get("subject", "#Placeholder")
         checks = ref.get("clock_checks", 0)
+        c_count = self.session_info.get("continuation_count", 0)
+
+        if c_count > 0:
+            c_tag = "Double Continued (x2)" if c_count == 2 else ("Triple Continued (x3)" if c_count >= 3 else "Continued (x1)")
+            st_str = f"Continued Session ({c_tag})"
+        else:
+            st_str = "Single Session (Fresh start)"
+
         txt = (
             f"### 📋 Study Session End Survey\n"
             f"- **Subject**: {subj}\n"
             f"- **Duration**: {mins} minutes\n"
+            f"- **Session Type**: {st_str}\n"
             f"- **Work Type**: {ref['work_type']}\n"
             f"- **Goal Outcome**: {ref['goal_outcome']}\n"
             f"- **Focus Quality**: {ref['focus_quality']}/5\n"
@@ -705,7 +742,7 @@ class PostSessionReflectionWindow(tk.Toplevel):
             f"- **Starting Friction**: {ref['starting_friction']}/5 ({ref['friction_trigger']})\n"
             f"- **Distraction Audit**: {ref['distraction_audit']}\n"
             f"- **Physical State**: {ref['caffeine']} | {ref['sleep']}\n"
-            f"- **Clock Checks**: {checks} time(s)\n"
+            f"- **Clock Checks**: {checks} time(s) (verified uncheatable)\n"
             f"- **Task Pacing**: {ref['pacing']}\n"
         )
         if ref['notes']:
@@ -1171,11 +1208,19 @@ class SettingsWindow(tk.Toplevel):
                 phys = f"{ref.get('caffeine', 'None')} | {ref.get('sleep', 'N/A')}" if 'caffeine' in ref else "N/A"
                 cc = ref.get('clock_checks', 0)
                 notes_str = f"\n  • Notes: {ref.get('notes')}" if ref.get("notes") else ""
+
+                c_info = ""
+                c_num = h.get("continuation_count", ref.get("continuation_count", 0))
+                if h.get("is_continuation") or c_num > 0:
+                    c_tag = "Double Continued (x2)" if c_num == 2 else ("Triple Continued (x3)" if c_num >= 3 else f"Continued x{c_num}")
+                    chain_m = h.get("chain_total_minutes", h.get("minutes", 0))
+                    c_info = f" [{c_tag} • Total Chain: {chain_m}m]"
+
                 reflections.append(
-                    f"- **{h.get('date', '')}** ({h.get('minutes', 0)}m on {h.get('subject', '#General')}):\n"
+                    f"- **{h.get('date', '')}** ({h.get('minutes', 0)}m on {h.get('subject', '#General')}{c_info}):\n"
                     f"  • Work Type: {wt} | Outcome: {outcome}\n"
                     f"  • Focus: {foc}/5 | Energy: {en}/5 | Friction: {fric}\n"
-                    f"  • Distraction: {dist} | Physical: {phys} | Clock Checks: {cc}\n"
+                    f"  • Distraction: {dist} | Physical: {phys} | Clock Checks: {cc} (locked)\n"
                     f"  • Pacing: {ref.get('pacing', 'N/A')}{notes_str}"
                 )
         if not reflections:
@@ -1794,9 +1839,13 @@ class FocusApp:
         self.warmup_enabled = False
         self.micro_goals = []
 
-        # Flow Momentum Overtime tracking
+        # Flow Momentum Overtime & Multi-Continuation tracking
         self.is_overtime = False
         self.overtime_multiplier = 1.0
+        self.continuation_count = 0
+        self.chain_total_minutes = 0
+        self.chain_clock_checks = 0
+        self.session_chain_id = None
 
         # Zeigarnik Micro-commitment & Emergency Hall Pass tracking
         self.is_micro_commitment = False
@@ -2490,23 +2539,31 @@ del "%~f0"
         self.root.configure(bg="#000000")
         FlowMomentumWindow(
             self.root,
-            base_minutes,
+            base_minutes=base_minutes,
+            continuation_count=getattr(self, 'continuation_count', 0),
+            chain_total_minutes=getattr(self, 'chain_total_minutes', base_minutes),
             on_select_boost=self.start_overtime_boost,
-            on_finish=self.finish_regular_session
+            on_finish=self.finish_chain_session
         )
 
     def start_overtime_boost(self, extension_minutes, multiplier):
         self.is_overtime = True
         self.overtime_multiplier = multiplier
+        self.continuation_count = getattr(self, 'continuation_count', 0) + 1
+        self.chain_total_minutes = getattr(self, 'chain_total_minutes', 0) + extension_minutes
         self.selected_minutes = extension_minutes
         self.time_left = extension_minutes * 60
         self.is_running = True
         self.last_peek_time = 0
+        self.clock_checks = 0
 
         self.block_websites()
 
         if hasattr(self, 'boost_badge_lbl'):
-            self.boost_badge_lbl.config(text=f"🔥 {multiplier}x Reward Boost Active (+{extension_minutes}m Overtime)")
+            c_tag = f"Continue #{self.continuation_count}"
+            if self.continuation_count == 2: c_tag = "Double Continue"
+            elif self.continuation_count == 3: c_tag = "Triple Continue"
+            self.boost_badge_lbl.config(text=f"🔥 {multiplier}x Boost Active (+{extension_minutes}m • {c_tag} • {self.chain_total_minutes}m total)")
 
         self.root.configure(bg="#000000")
         self.canvas.configure(bg="#000000")
@@ -2516,19 +2573,35 @@ del "%~f0"
         self.emerge_btn.place(x=405, y=750, width=35, height=20)
         self.update_loop()
 
-    def finish_regular_session(self):
-        mins = self.selected_minutes
+    def finish_chain_session(self):
+        total_mins = getattr(self, 'chain_total_minutes', self.selected_minutes)
+        c_count = getattr(self, 'continuation_count', 0)
+        c_checks = getattr(self, 'chain_clock_checks', getattr(self, 'clock_checks', 0))
+        subj = self.current_subject
+
         self.is_overtime = False
         self.overtime_multiplier = 1.0
         self.is_running = False
-        self.reset_to_setup_view()
-        self.prompt_post_session_reflection(mins)
+        self.continuation_count = 0
+        self.chain_total_minutes = 0
+        self.chain_clock_checks = 0
 
-    def prompt_post_session_reflection(self, minutes, subject=None):
+        self.reset_to_setup_view()
+        self.prompt_post_session_reflection(
+            minutes=total_mins,
+            subject=subj,
+            continuation_count=c_count,
+            clock_checks=c_checks
+        )
+
+    finish_regular_session = finish_chain_session
+
+    def prompt_post_session_reflection(self, minutes, subject=None, continuation_count=0, clock_checks=None):
         info = {
             "minutes": minutes,
             "subject": subject or self.current_subject,
-            "clock_checks": getattr(self, 'clock_checks', 0)
+            "clock_checks": clock_checks if clock_checks is not None else getattr(self, 'clock_checks', 0),
+            "continuation_count": continuation_count
         }
         self.root.after(250, lambda: PostSessionReflectionWindow(
             self.root,
@@ -2830,7 +2903,7 @@ del "%~f0"
         except Exception:
             pass
 
-    def record_completed_session(self, real_minutes, completed=True, reward_minutes=None):
+    def record_completed_session(self, real_minutes, completed=True, reward_minutes=None, is_continuation=None, continuation_count=None, chain_total=None, chain_id=None):
         self.total_focused_minutes += real_minutes
         
         # Streak multiplier boost bonus
@@ -2844,6 +2917,11 @@ del "%~f0"
         self.reward_tier_minutes += final_reward_credit
         
         today_str = datetime.now().strftime("%Y-%m-%d")
+        c_count = continuation_count if continuation_count is not None else getattr(self, 'continuation_count', 0)
+        c_flag = is_continuation if is_continuation is not None else (c_count > 0)
+        c_total = chain_total if chain_total is not None else getattr(self, 'chain_total_minutes', real_minutes)
+        c_id = chain_id if chain_id is not None else getattr(self, 'session_chain_id', str(time.time()))
+
         self.history.append({
             "date": today_str,
             "minutes": real_minutes,
@@ -2853,7 +2931,11 @@ del "%~f0"
             "subject": self.current_subject,
             "goals": [g for g in self.micro_goals],
             "overtime_boost": self.overtime_multiplier if self.is_overtime else 1.0,
-            "streak_boost": streak_mult
+            "streak_boost": streak_mult,
+            "is_continuation": c_flag,
+            "continuation_count": c_count,
+            "chain_total_minutes": c_total,
+            "chain_id": c_id
         })
         
         if real_minutes >= 15 and completed:
@@ -3168,6 +3250,13 @@ del "%~f0"
         self.last_peek_time = 0 
         self.clock_checks = 0
         self.last_clock_check_click = 0
+
+        # Fresh session chain initialization
+        if not getattr(self, 'is_overtime', False):
+            self.continuation_count = 0
+            self.chain_total_minutes = self.selected_minutes
+            self.session_chain_id = str(time.time())
+            self.chain_clock_checks = 0
         
         self.block_websites()
 
@@ -3254,6 +3343,7 @@ del "%~f0"
         # Count clock check / peek requests (debounced by 1.5s)
         if not hasattr(self, 'last_clock_check_click') or (now - self.last_clock_check_click >= 1.5):
             self.clock_checks = getattr(self, 'clock_checks', 0) + 1
+            self.chain_clock_checks = getattr(self, 'chain_clock_checks', 0) + 1
             self.last_clock_check_click = now
 
         current_time = time.time()
@@ -3323,33 +3413,51 @@ del "%~f0"
                         return
                     else:
                         self.record_completed_session(5, completed=True, reward_minutes=5)
-                        self.is_running = False
-                        self.reset_to_setup_view()
-                        self.prompt_post_session_reflection(5)
+                        self.finish_chain_session()
                         return
 
                 if self.is_overtime:
                     boosted_reward = int(round(base_mins * self.overtime_multiplier))
-                    self.record_completed_session(base_mins, completed=True, reward_minutes=boosted_reward)
-                    messagebox.showinfo("🔥 Flow Session Complete!", f"Awesome work! You studied for {base_mins}m.\nEarned {boosted_reward}m progress toward your Reward Tiers ({self.overtime_multiplier}x Boost)!")
-                    self.is_overtime = False
-                    self.overtime_multiplier = 1.0
-                    self.is_running = False
-                    self.reset_to_setup_view()
-                    self.prompt_post_session_reflection(base_mins)
+                    self.record_completed_session(
+                        base_mins,
+                        completed=True,
+                        reward_minutes=boosted_reward,
+                        is_continuation=True,
+                        continuation_count=self.continuation_count,
+                        chain_total=self.chain_total_minutes,
+                        chain_id=self.session_chain_id
+                    )
+
+                    # Multi-continuation: allow up to 3 continuations (Continue #1, Double Continue #2, Triple Continue #3)
+                    if self.continuation_count < 3:
+                        self.prompt_flow_momentum(base_mins)
+                    else:
+                        messagebox.showinfo(
+                            "🔥 Flow Chain Complete!",
+                            f"Incredible focus! You completed a Triple Continued Flow Session!\n"
+                            f"Total Focused: {self.chain_total_minutes}m across {self.continuation_count + 1} blocks.\n"
+                            f"All reward boosts have been credited!"
+                        )
+                        self.finish_chain_session()
                 else:
-                    self.record_completed_session(base_mins, completed=True, reward_minutes=base_mins)
+                    self.record_completed_session(
+                        base_mins,
+                        completed=True,
+                        reward_minutes=base_mins,
+                        is_continuation=False,
+                        continuation_count=0,
+                        chain_total=base_mins,
+                        chain_id=self.session_chain_id
+                    )
                     
                     if self.mode == "pomodoro":
                         break_len = 15 if self.pomo_cycle == 4 else 5
                         self.start_break_mode(break_len)
                     else:
-                        if base_mins >= 25:
+                        if base_mins >= 15:
                             self.prompt_flow_momentum(base_mins)
                         else:
-                            self.is_running = False
-                            self.reset_to_setup_view()
-                            self.prompt_post_session_reflection(base_mins)
+                            self.finish_chain_session()
             else:
                 if hasattr(self, 'break_frame') and self.break_frame.winfo_exists():
                     self.break_frame.destroy()
@@ -3366,6 +3474,9 @@ del "%~f0"
         self.unblock_websites()
         self.is_overtime = False
         self.overtime_multiplier = 1.0
+        self.continuation_count = 0
+        self.chain_total_minutes = 0
+        self.chain_clock_checks = 0
         self.youtube_bypassed = False
         self.youtube_permitted = False
         self.is_micro_commitment = False
@@ -3461,6 +3572,9 @@ del "%~f0"
             self.is_running = False
             self.is_overtime = False
             self.overtime_multiplier = 1.0
+            self.continuation_count = 0
+            self.chain_total_minutes = 0
+            self.chain_clock_checks = 0
             self.unblock_websites() 
             self.root.destroy()
         else:
