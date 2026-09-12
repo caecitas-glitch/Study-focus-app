@@ -2021,8 +2021,16 @@ class FocusApp:
 
                 bat_path = os.path.join(tempfile.gettempdir(), "focus_update_swap.bat")
                 bat_content = f"""@echo off
+setlocal EnableDelayedExpansion
+set attempts=0
+:WAIT_LOOP
 timeout /t 1 /nobreak > nul
-move /y "{temp_exe}" "{target_exe}" > nul
+set /a attempts+=1
+move /y "{temp_exe}" "{target_exe}" > nul 2>&1
+if exist "{temp_exe}" (
+    if !attempts! lss 20 goto WAIT_LOOP
+)
+timeout /t 1 /nobreak > nul
 start "" "{target_exe}"
 del "%~f0"
 """
