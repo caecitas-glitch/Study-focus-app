@@ -19,12 +19,37 @@ from datetime import datetime, timedelta, date
 from collections import Counter
 
 # --- Application Info & Versioning ---
-APP_VERSION = "1.0.2"
+APP_VERSION = "1.0.3"
 GITHUB_REPO = "caecitas-glitch/Study-focus-app"
 
 def parse_version_str(v_str):
     nums = re.findall(r'\d+', str(v_str))
     return tuple(map(int, nums)) if nums else (0,)
+
+def parse_schedule_time(time_str):
+    """Parses 'HH:MM' or 'HH.MM' or 'H:MM' or 'H.MM'. Returns (hour, minute) or None."""
+    if not time_str:
+        return None
+    cleaned = time_str.strip().replace('.', ':')
+    m = re.match(r'^(\d{1,2}):(\d{2})$', cleaned)
+    if m:
+        h, mn = int(m.group(1)), int(m.group(2))
+        if 0 <= h <= 23 and 0 <= mn <= 59:
+            return (h, mn)
+    return None
+
+def get_target_schedule_datetime(date_str, time_str="14:00"):
+    """Returns datetime object for date_str ('YYYY-MM-DD') and time_str ('HH:MM' or 'HH.MM')."""
+    if not date_str:
+        return None
+    t_parsed = parse_schedule_time(time_str)
+    if not t_parsed:
+        t_parsed = (14, 0)
+    try:
+        d = datetime.strptime(date_str, "%Y-%m-%d").date()
+        return datetime(d.year, d.month, d.day, t_parsed[0], t_parsed[1], 0)
+    except Exception:
+        return None
 
 # --- Directory & Environment Helper ---
 
@@ -760,64 +785,216 @@ class PostSessionReflectionWindow(tk.Toplevel):
         self.destroy()
 
 
+# --- Scheduled Session Warning Toast ---
+class ScheduledWarningToast(tk.Toplevel):
+    def __init__(self, parent, subject, minutes, remaining_str, target_time_str, urgency="5m"):
+        super().__init__(parent)
+        self.title("⏰ Focus Session Countdown")
+        self.geometry("400x160")
+        self.configure(bg="#0d0d15")
+        self.resizable(False, False)
+        self.attributes("-topmost", True)
+
+        try:
+            sw = self.winfo_screenwidth()
+            self.geometry(f"400x160+{max(20, sw - 430)}+50")
+        except Exception:
+            pass
+
+        border_color = "#f44336" if urgency == "1m" else ("#ff9800" if urgency == "3m" else "#00bcd4")
+        container = tk.Frame(self, bg="#141422", highlightbackground=border_color, highlightthickness=2)
+        container.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
+
+        icon_title = "🚨 1 MINUTE WARNING!" if urgency == "1m" else ("⚠️ 3 MINUTES WARNING!" if urgency == "3m" else "🔔 5 MINUTES WARNING!")
+        tk.Label(container, text=f"{icon_title} (Starts in {remaining_str})", font=("Segoe UI", 10, "bold"), bg="#141422", fg=border_color).pack(pady=(10, 2))
+
+        desc = f"Pre-scheduled [{subject}] ({minutes}m) starts at {target_time_str}.\nWrap up your tabs and get ready to lock in!"
+        tk.Label(container, text=desc, font=("Segoe UI", 8), bg="#141422", fg="#dddddd", justify="center", wraplength=360).pack(pady=(0, 10))
+
+        btn = tk.Button(container, text="✓ Got It! I'm Ready", font=("Segoe UI", 8, "bold"), bg=border_color, fg="black" if border_color in ("#00bcd4", "#ff9800") else "white", relief="flat", padx=12, pady=3, command=self.destroy)
+        btn.pack(pady=(0, 6))
+
+        try:
+            winsound.PlaySound("SystemExclamation", winsound.SND_ALIAS | winsound.SND_ASYNC)
+        except Exception:
+            pass
+
+        self.after(14000, lambda: self.destroy() if self.winfo_exists() else None)
+
+
 # --- Pre-Designate Session Dialog ---
 class PreDesignateWindow(tk.Toplevel):
     def __init__(self, parent, app):
         super().__init__(parent)
         self.app = app
-        self.title("📅 Pre-Designate Focus Session")
-        self.geometry("380x320")
+        self.title("📅 Pre-Schedule Focus Session")
+        self.geometry("420x460")
         self.configure(bg="#121212")
         self.resizable(False, False)
         self.transient(parent)
         self.grab_set()
 
-        tk.Label(self, text="📅 Pre-Schedule Next Session", font=("Segoe UI", 11, "bold"), bg="#121212", fg="#00bcd4").pack(pady=(15, 4))
-        tk.Label(self, text="Lock in your study commitment in advance.\nThe app will FORCE-START this session on that day!", font=("Segoe UI", 8), bg="#121212", fg="#888888", justify="center").pack(pady=(0, 10))
+        tk.Label(self, text="📅 Pre-Schedule Focus Session", font=("Segoe UI", 12, "bold"), bg="#121212", fg="#00bcd4").pack(pady=(14, 2))
+        tk.Label(self, text="Lock in an exact date & time in advance.\nYou'll receive 5m, 3m & 1m warnings before auto-starting.\n(If your PC was off, it will start the moment you boot!)", font=("Segoe UI", 8), bg="#121212", fg="#888888", justify="center").pack(pady=(0, 10))
 
-        form_f = tk.Frame(self, bg="#1a1a1a")
-        form_f.pack(fill=tk.BOTH, expand=True, padx=20, pady=5)
+        # Check existing schedule
+        curr_sched = getattr(self.app, 'pre_designated_session', {}) or {}
+        is_active = curr_sched.get("active", False)
 
-        # Date Option
-        tk.Label(form_f, text="Schedule Date:", font=("Segoe UI", 8, "bold"), bg="#1a1a1a", fg="#cccccc").grid(row=0, column=0, sticky="w", padx=10, pady=8)
-        self.date_var = tk.StringVar(value="Tomorrow")
-        tomorrow_str = (datetime.now().date() + timedelta(days=1)).strftime("%Y-%m-%d")
-        today_str = datetime.now().date().strftime("%Y-%m-%d")
-        date_combo = ttk.Combobox(form_f, textvariable=self.date_var, values=["Tomorrow (" + tomorrow_str + ")", "Today (" + today_str + ")"], state="readonly", font=("Segoe UI", 8))
-        date_combo.grid(row=0, column=1, sticky="ew", padx=10, pady=8)
+        form_f = tk.Frame(self, bg="#1a1a1a", highlightbackground="#2d2d3f", highlightthickness=1)
+        form_f.pack(fill=tk.BOTH, expand=True, padx=18, pady=4)
 
-        # Duration Option
-        tk.Label(form_f, text="Duration (Mins):", font=("Segoe UI", 8, "bold"), bg="#1a1a1a", fg="#cccccc").grid(row=1, column=0, sticky="w", padx=10, pady=8)
-        self.dur_var = tk.IntVar(value=45)
-        dur_combo = ttk.Combobox(form_f, textvariable=self.dur_var, values=[15, 25, 30, 45, 60, 90, 120], state="readonly", font=("Segoe UI", 8))
-        dur_combo.grid(row=1, column=1, sticky="ew", padx=10, pady=8)
+        # 1. Date Selection
+        tk.Label(form_f, text="Target Date:", font=("Segoe UI", 8, "bold"), bg="#1a1a1a", fg="#cccccc").grid(row=0, column=0, sticky="w", padx=10, pady=6)
+        date_options = []
+        today = datetime.now().date()
+        date_options.append(f"Today ({today.strftime('%Y-%m-%d')})")
+        date_options.append(f"Tomorrow ({(today + timedelta(days=1)).strftime('%Y-%m-%d')})")
+        for d_offset in range(2, 8):
+            fut_d = today + timedelta(days=d_offset)
+            date_options.append(f"In {d_offset} Days ({fut_d.strftime('%Y-%m-%d')})")
 
-        # Subject Tag Option
-        tk.Label(form_f, text="Subject Tag:", font=("Segoe UI", 8, "bold"), bg="#1a1a1a", fg="#cccccc").grid(row=2, column=0, sticky="w", padx=10, pady=8)
-        self.tag_var = tk.StringVar(value=self.app.custom_tags[0] if self.app.custom_tags else "#Placeholder")
+        saved_date = curr_sched.get("date", "")
+        def_date_idx = 1 # Tomorrow by default
+        if is_active and saved_date:
+            for idx, opt in enumerate(date_options):
+                if saved_date in opt:
+                    def_date_idx = idx
+                    break
+
+        self.date_var = tk.StringVar(value=date_options[def_date_idx])
+        date_combo = ttk.Combobox(form_f, textvariable=self.date_var, values=date_options, font=("Segoe UI", 8), state="readonly")
+        date_combo.grid(row=0, column=1, sticky="ew", padx=10, pady=6)
+
+        # 2. Time Selection (HH:MM or HH.MM)
+        tk.Label(form_f, text="Start Time (XX:XX):", font=("Segoe UI", 8, "bold"), bg="#1a1a1a", fg="#cccccc").grid(row=1, column=0, sticky="w", padx=10, pady=6)
+        
+        time_container = tk.Frame(form_f, bg="#1a1a1a")
+        time_container.grid(row=1, column=1, sticky="ew", padx=10, pady=6)
+
+        # Default time: next upcoming round hour
+        now_dt = datetime.now()
+        def_hour = (now_dt.hour + 1) % 24
+        def_time_str = curr_sched.get("time", f"{def_hour:02d}:00") if is_active else f"{def_hour:02d}:00"
+
+        self.time_entry = tk.Entry(time_container, width=8, font=("Segoe UI", 9, "bold"), bg="#262626", fg="white", insertbackground="white", justify="center", bd=0)
+        self.time_entry.insert(0, def_time_str)
+        self.time_entry.pack(side=tk.LEFT, padx=(0, 6))
+
+        tk.Label(time_container, text="(e.g. 14:30 or 14.30)", font=("Segoe UI", 7), bg="#1a1a1a", fg="#777777").pack(side=tk.LEFT)
+
+        # Quick preset buttons row
+        quick_f = tk.Frame(form_f, bg="#1a1a1a")
+        quick_f.grid(row=2, column=1, sticky="w", padx=10, pady=(0, 6))
+
+        def set_rel_time(min_offset):
+            target = datetime.now() + timedelta(minutes=min_offset)
+            self.time_entry.delete(0, tk.END)
+            self.time_entry.insert(0, target.strftime("%H:%M"))
+
+        def set_fixed_time(t_str):
+            self.time_entry.delete(0, tk.END)
+            self.time_entry.insert(0, t_str)
+
+        tk.Button(quick_f, text="+30m", font=("Segoe UI", 7), bg="#262635", fg="#00bcd4", relief="flat", padx=4, pady=1, command=lambda: set_rel_time(30)).pack(side=tk.LEFT, padx=2)
+        tk.Button(quick_f, text="+1h", font=("Segoe UI", 7), bg="#262635", fg="#00bcd4", relief="flat", padx=4, pady=1, command=lambda: set_rel_time(60)).pack(side=tk.LEFT, padx=2)
+        tk.Button(quick_f, text="+2h", font=("Segoe UI", 7), bg="#262635", fg="#00bcd4", relief="flat", padx=4, pady=1, command=lambda: set_rel_time(120)).pack(side=tk.LEFT, padx=2)
+        tk.Button(quick_f, text="12:00", font=("Segoe UI", 7), bg="#262635", fg="#aaaaaa", relief="flat", padx=4, pady=1, command=lambda: set_fixed_time("12:00")).pack(side=tk.LEFT, padx=2)
+        tk.Button(quick_f, text="18:00", font=("Segoe UI", 7), bg="#262635", fg="#aaaaaa", relief="flat", padx=4, pady=1, command=lambda: set_fixed_time("18:00")).pack(side=tk.LEFT, padx=2)
+
+        # 3. Duration Option
+        tk.Label(form_f, text="Duration (Mins):", font=("Segoe UI", 8, "bold"), bg="#1a1a1a", fg="#cccccc").grid(row=3, column=0, sticky="w", padx=10, pady=6)
+        self.dur_var = tk.IntVar(value=curr_sched.get("minutes", 45) if is_active else 45)
+        dur_combo = ttk.Combobox(form_f, textvariable=self.dur_var, values=[15, 25, 30, 45, 60, 90, 120], font=("Segoe UI", 8))
+        dur_combo.grid(row=3, column=1, sticky="ew", padx=10, pady=6)
+
+        # 4. Subject Tag Option
+        tk.Label(form_f, text="Subject Tag:", font=("Segoe UI", 8, "bold"), bg="#1a1a1a", fg="#cccccc").grid(row=4, column=0, sticky="w", padx=10, pady=6)
+        init_tag = curr_sched.get("subject", self.app.custom_tags[0] if self.app.custom_tags else "#General") if is_active else (self.app.custom_tags[0] if self.app.custom_tags else "#General")
+        self.tag_var = tk.StringVar(value=init_tag)
         tag_combo = ttk.Combobox(form_f, textvariable=self.tag_var, values=self.app.custom_tags, state="readonly", font=("Segoe UI", 8))
-        tag_combo.grid(row=2, column=1, sticky="ew", padx=10, pady=8)
+        tag_combo.grid(row=4, column=1, sticky="ew", padx=10, pady=6)
 
         form_f.columnconfigure(1, weight=1)
 
-        # Save Button
-        tk.Button(self, text="🔒 Lock In Pre-Scheduled Session", font=("Segoe UI", 9, "bold"), bg="#4CAF50", fg="white", relief="flat", padx=10, pady=5, command=self.save_schedule).pack(pady=12)
+        # Active Schedule Status Notice
+        if is_active:
+            status_f = tk.Frame(self, bg="#241505", highlightbackground="#ff9800", highlightthickness=1)
+            status_f.pack(fill=tk.X, padx=18, pady=(4, 0))
+            s_date = curr_sched.get("date", "")
+            s_time = curr_sched.get("time", "")
+            s_mins = curr_sched.get("minutes", "")
+            s_subj = curr_sched.get("subject", "")
+            tk.Label(status_f, text=f"⚡ Currently Locked: {s_date} at {s_time}\n[{s_subj}] ({s_mins}m session)", font=("Segoe UI", 8, "bold"), bg="#241505", fg="#ff9800").pack(pady=4)
+
+        # Action Buttons
+        btn_box = tk.Frame(self, bg="#121212")
+        btn_box.pack(pady=12)
+
+        lock_text = "🔒 Update Scheduled Session" if is_active else "🔒 Lock In Pre-Scheduled Session"
+        tk.Button(btn_box, text=lock_text, font=("Segoe UI", 9, "bold"), bg="#4CAF50", fg="white", relief="flat", padx=12, pady=5, command=self.save_schedule).pack(side=tk.LEFT, padx=4)
+
+        if is_active:
+            tk.Button(btn_box, text="✕ Cancel Schedule", font=("Segoe UI", 8, "bold"), bg="#331111", fg="#f44336", relief="flat", padx=8, pady=5, command=self.cancel_schedule).pack(side=tk.LEFT, padx=4)
+
+    def cancel_schedule(self):
+        self.app.pre_designated_session = {"active": False, "date": "", "time": "", "minutes": 45, "subject": self.app.current_subject}
+        self.app.save_data()
+        self.app.update_pre_designate_ui_status()
+        messagebox.showinfo("Schedule Cancelled", "The pre-scheduled focus session has been cancelled.")
+        self.destroy()
 
     def save_schedule(self):
-        choice = self.date_var.get()
-        if "Tomorrow" in choice:
-            sched_date = (datetime.now().date() + timedelta(days=1)).strftime("%Y-%m-%d")
-        else:
-            sched_date = datetime.now().date().strftime("%Y-%m-%d")
+        date_sel = self.date_var.get()
+        match = re.search(r'\d{4}-\d{2}-\d{2}', date_sel)
+        sched_date = match.group(0) if match else date_sel.strip()
+
+        time_val = self.time_entry.get().strip()
+        parsed_t = parse_schedule_time(time_val)
+        if not parsed_t:
+            messagebox.showerror("Invalid Time", f"Please enter time as HH:MM or HH.MM (e.g. 14:30 or 14.30).\nYou entered: '{time_val}'")
+            return
+
+        formatted_time = f"{parsed_t[0]:02d}:{parsed_t[1]:02d}"
+
+        try:
+            mins = int(self.dur_var.get())
+            if mins <= 0: raise ValueError
+        except ValueError:
+            messagebox.showerror("Invalid Duration", "Please choose or enter a valid minute duration (e.g. 45).")
+            return
 
         self.app.pre_designated_session = {
             "active": True,
             "date": sched_date,
-            "minutes": self.dur_var.get(),
-            "subject": self.tag_var.get()
+            "time": formatted_time,
+            "minutes": mins,
+            "subject": self.tag_var.get(),
+            "warned_5m": False,
+            "warned_3m": False,
+            "warned_1m": False
         }
         self.app.save_data()
-        messagebox.showinfo("Session Locked In! 🔒", f"Pre-scheduled {self.dur_var.get()}m session for [{self.tag_var.get()}] on {sched_date}.\n\nThe app will force-start your session when launched on that day!")
+        self.app.update_pre_designate_ui_status()
+
+        target_dt = get_target_schedule_datetime(sched_date, formatted_time)
+        now = datetime.now()
+        if target_dt and target_dt > now:
+            time_diff = target_dt - now
+            h, rem = divmod(int(time_diff.total_seconds()), 3600)
+            m, _ = divmod(rem, 60)
+            diff_str = f"in {h}h {m}m" if h > 0 else f"in {m}m"
+        else:
+            diff_str = "past due (will start immediately or upon next boot)"
+
+        messagebox.showinfo(
+            "Session Locked In! 🔒",
+            f"Pre-scheduled {mins}m focus block for [{self.tag_var.get()}]:\n\n"
+            f"📅 Date: {sched_date}\n"
+            f"⏰ Time: {formatted_time} ({diff_str})\n\n"
+            f"• You will receive 5m, 3m, and 1m warnings before it starts.\n"
+            f"• If your computer is off at that time, it will auto-start the moment you boot up!"
+        )
         self.destroy()
 
 
@@ -1881,7 +2058,7 @@ class FocusApp:
         self.startup_check_enabled = data["startup_check_enabled"]
         self.last_deadline_alert_date = data.get("last_deadline_alert_date", "")
         self.ical_subscription_url = data.get("ical_subscription_url", "")
-        self.pre_designated_session = data.get("pre_designated_session", {"active": False, "date": "", "minutes": 45, "subject": "#Placeholder"})
+        self.pre_designated_session = data.get("pre_designated_session", {"active": False, "date": "", "time": "", "minutes": 45, "subject": "#Placeholder", "warned_5m": False, "warned_3m": False, "warned_1m": False})
         self.custom_youtube_url = data.get("custom_youtube_url", "")
         self.use_custom_youtube = data.get("use_custom_youtube", False)
 
@@ -1900,6 +2077,7 @@ class FocusApp:
 
         # Build Pitch Black UI
         self.build_ui()
+        self.update_pre_designate_ui_status()
 
         # Update Windows startup file to ensure working directory is correct
         if self.startup_check_enabled:
@@ -1908,6 +2086,9 @@ class FocusApp:
         # Auto-sync iCal subscription in background if URL is configured
         if self.ical_subscription_url:
             threading.Thread(target=self.auto_sync_ical_subscription, daemon=True).start()
+
+        # Pre-Scheduled Session Warning & Countdown Poller Loop
+        self.root.after(2000, self.check_scheduled_session_loop)
 
         # Handle Pre-Designated Session / Startup Checks
         if self.is_startup_mode:
@@ -2068,15 +2249,33 @@ del "%~f0"
             pass
 
     # --- Pre-Designated Force-Start Session Handler ---
-    def check_pre_designated_session(self):
+    def update_pre_designate_ui_status(self):
+        try:
+            if not hasattr(self, 'sched_btn') or not self.sched_btn.winfo_exists():
+                return
+            if self.pre_designated_session and self.pre_designated_session.get("active", False):
+                s_date = self.pre_designated_session.get("date", "")
+                s_time = self.pre_designated_session.get("time", "")
+                today_str = datetime.now().strftime("%Y-%m-%d")
+                d_label = "Today" if s_date == today_str else s_date[5:]
+                self.sched_btn.config(text=f"🔒 {d_label} {s_time}", bg="#142817", fg="#4CAF50")
+            else:
+                self.sched_btn.config(text="📅 Pre-Schedule", bg="#1f1f1f", fg="#ff9800")
+        except Exception:
+            pass
+
+    def check_pre_designated_session(self, is_missed_boot=False):
         if not self.pre_designated_session or not self.pre_designated_session.get("active", False):
             return
 
         sched_date = self.pre_designated_session.get("date", "")
-        today_str = datetime.now().date().strftime("%Y-%m-%d")
+        sched_time = self.pre_designated_session.get("time", "14:00")
+        target_dt = get_target_schedule_datetime(sched_date, sched_time)
+        if not target_dt:
+            return
 
-        # If designated date has arrived
-        if sched_date and today_str >= sched_date:
+        now = datetime.now()
+        if now >= target_dt:
             if not is_admin():
                 relaunch_as_admin()
                 return
@@ -2086,30 +2285,100 @@ del "%~f0"
 
             self.pre_designated_session["active"] = False
             self.save_data()
+            self.update_pre_designate_ui_status()
 
             self.selected_minutes = mins
             self.current_subject = subj
             self.subj_var.set(subj)
             self.sync_minute_entry()
 
+            # Bring app window to front
+            self.root.deiconify()
+            self.root.lift()
+
             # FORCE-START the session immediately!
             self.start_timer()
-            messagebox.showinfo("🎯 Pre-Designated Session Enforced!", f"You committed to a {mins}m focus block for [{subj}] today.\n\nSession has started automatically — no excuses!")
+
+            if is_missed_boot:
+                messagebox.showinfo(
+                    "🎯 Scheduled Session Enforced (Missed While Offline)",
+                    f"You committed to a {mins}m focus block for [{subj}] scheduled for {sched_date} at {sched_time}.\n\n"
+                    f"Your computer was off when the scheduled time arrived, so it has started now — no excuses!"
+                )
+            else:
+                messagebox.showinfo(
+                    "🎯 Scheduled Session Starting!",
+                    f"Your scheduled time ({sched_time}) has arrived!\n\n"
+                    f"Starting your {mins}m focus block for [{subj}] now — lock in!"
+                )
+
+    def check_scheduled_session_loop(self):
+        try:
+            if self.pre_designated_session and self.pre_designated_session.get("active", False):
+                sched_date = self.pre_designated_session.get("date", "")
+                sched_time = self.pre_designated_session.get("time", "14:00")
+                target_dt = get_target_schedule_datetime(sched_date, sched_time)
+                if target_dt:
+                    now = datetime.now()
+                    delta = (target_dt - now).total_seconds()
+                    subj = self.pre_designated_session.get("subject", self.current_subject)
+                    mins = self.pre_designated_session.get("minutes", 45)
+
+                    if delta <= 0:
+                        # Reached scheduled time
+                        self.check_pre_designated_session(is_missed_boot=False)
+                    elif not self.is_running:
+                        # Send warnings only when not already running a focus block
+                        if delta <= 60:
+                            if not self.pre_designated_session.get("warned_1m", False):
+                                self.pre_designated_session["warned_1m"] = True
+                                self.pre_designated_session["warned_3m"] = True
+                                self.pre_designated_session["warned_5m"] = True
+                                self.save_data()
+                                rem_str = f"{int(max(1, delta))} seconds"
+                                ScheduledWarningToast(self.root, subj, mins, rem_str, sched_time, urgency="1m")
+                        elif delta <= 180:
+                            if not self.pre_designated_session.get("warned_3m", False):
+                                self.pre_designated_session["warned_3m"] = True
+                                self.pre_designated_session["warned_5m"] = True
+                                self.save_data()
+                                m_rem = int(delta // 60)
+                                s_rem = int(delta % 60)
+                                rem_str = f"{m_rem}m {s_rem:02d}s"
+                                ScheduledWarningToast(self.root, subj, mins, rem_str, sched_time, urgency="3m")
+                        elif delta <= 300:
+                            if not self.pre_designated_session.get("warned_5m", False):
+                                self.pre_designated_session["warned_5m"] = True
+                                self.save_data()
+                                m_rem = int(delta // 60)
+                                s_rem = int(delta % 60)
+                                rem_str = f"{m_rem}m {s_rem:02d}s"
+                                ScheduledWarningToast(self.root, subj, mins, rem_str, sched_time, urgency="5m")
+        except Exception:
+            pass
+        finally:
+            self.root.after(4000, self.check_scheduled_session_loop)
 
     def open_pre_designate_dialog(self):
         PreDesignateWindow(self.root, self)
 
     def handle_startup_deadline_check(self):
-        # 1. Check if pre-designated session is due today
+        # 1. Check if pre-designated session is due now or was missed while offline
         if self.pre_designated_session and self.pre_designated_session.get("active", False):
             sched_date = self.pre_designated_session.get("date", "")
-            today_str = datetime.now().date().strftime("%Y-%m-%d")
-            if sched_date and today_str >= sched_date:
+            sched_time = self.pre_designated_session.get("time", "14:00")
+            target_dt = get_target_schedule_datetime(sched_date, sched_time)
+            now = datetime.now()
+            if target_dt and now >= target_dt:
                 if not is_admin():
                     relaunch_as_admin()
                     return
                 self.root.deiconify()
-                self.check_pre_designated_session()
+                self.check_pre_designated_session(is_missed_boot=True)
+                return
+            elif target_dt and target_dt.date() == now.date() and target_dt > now:
+                # Session is scheduled for later today: keep main window active (deiconify)
+                self.root.deiconify()
                 return
 
         # 2. Otherwise check upcoming deadlines
