@@ -7,9 +7,41 @@ import threading
 from datetime import datetime
 from flask import Flask, jsonify, request, Response, send_file
 
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w')
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w')
+
 app = Flask(__name__)
 
-APP_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+def get_app_dir():
+    if getattr(sys, 'frozen', False):
+        return os.path.dirname(sys.executable)
+    return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+def get_bundle_dir():
+    if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+        return sys._MEIPASS
+    return get_app_dir()
+
+def get_apk_path():
+    app_dir = get_app_dir()
+    p1 = os.path.join(app_dir, "mobile_companion", "focusflow-companion.apk")
+    if os.path.exists(p1):
+        return p1
+    p2 = os.path.join(app_dir, "focusflow-companion.apk")
+    if os.path.exists(p2):
+        return p2
+    bundle_dir = get_bundle_dir()
+    p3 = os.path.join(bundle_dir, "mobile_companion", "focusflow-companion.apk")
+    if os.path.exists(p3):
+        return p3
+    p4 = os.path.join(bundle_dir, "focusflow-companion.apk")
+    if os.path.exists(p4):
+        return p4
+    return None
+
+APP_DIR = get_app_dir()
 DATA_FILE = os.path.join(APP_DIR, "focus_data.json")
 LIVE_SESSION_FILE = os.path.join(APP_DIR, "focus_live_session.json")
 
@@ -166,8 +198,8 @@ def index():
 
 @app.route("/download", methods=["GET"])
 def download_apk():
-    apk_path = os.path.join(APP_DIR, "mobile_companion", "focusflow-companion.apk")
-    if os.path.exists(apk_path):
+    apk_path = get_apk_path()
+    if apk_path and os.path.exists(apk_path):
         return send_file(apk_path, as_attachment=True, download_name="focusflow-companion.apk", mimetype="application/vnd.android.package-archive")
     return "focusflow-companion.apk not found", 404
 
@@ -179,6 +211,19 @@ def ping():
         "version": "1.0",
         "server_time": time.time(),
         "local_ip": get_local_ip()
+    })
+
+@app.route("/api/version", methods=["GET"])
+def get_version():
+    apk_path = get_apk_path()
+    size_mb = f"{os.path.getsize(apk_path) / (1024 * 1024):.1f} MB" if (apk_path and os.path.exists(apk_path)) else "6.2 MB"
+    return jsonify({
+        "versionCode": 5,
+        "versionName": "1.0.4",
+        "downloadUrl": "/download",
+        "releaseNotes": "7 AM Daily Morning Fuel motivation quotes, silent background guardian (no status bar icon), background guardian toggle switch",
+        "apkSize": size_mb,
+        "minSupportedVersion": 1
     })
 
 @app.route("/api/status", methods=["GET"])
@@ -312,6 +357,26 @@ def sse_events():
 
     return Response(event_stream(), mimetype="text/event-stream")
 
+_ticker_started = False
+_ticker_lock = threading.Lock()
+
+def start_embedded_server(port=5050):
+    """Runs Flask server quietly on 0.0.0.0:port on a background thread inside focus_app.exe."""
+    global _ticker_started
+    with _ticker_lock:
+        if not _ticker_started:
+            ticker = threading.Thread(target=timer_ticker_thread, daemon=True)
+            ticker.start()
+            _ticker_started = True
+
+    import logging
+    log = logging.getLogger('werkzeug')
+    log.setLevel(logging.ERROR)
+    try:
+        app.run(host="0.0.0.0", port=port, debug=False, threaded=True, use_reloader=False)
+    except Exception as e:
+        print(f"[FocusFlow Bridge] Server error: {e}")
+
 if __name__ == "__main__":
     port = 5050
     ip = get_local_ip()
@@ -321,7 +386,4 @@ if __name__ == "__main__":
     print(f" Phone Wi-Fi URL: http://{ip}:{port}")
     print("=" * 60)
 
-    ticker = threading.Thread(target=timer_ticker_thread, daemon=True)
-    ticker.start()
-
-    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)
+    start_embedded_server(port)
