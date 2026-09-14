@@ -15,11 +15,13 @@ import re
 import urllib.request
 import ssl
 import threading
+import socket
+import shutil
 from datetime import datetime, timedelta, date
 from collections import Counter
 
 # --- Application Info & Versioning ---
-APP_VERSION = "1.0.3"
+APP_VERSION = "1.0.4"
 GITHUB_REPO = "caecitas-glitch/Study-focus-app"
 
 def parse_version_str(v_str):
@@ -57,6 +59,82 @@ def get_app_dir():
     if getattr(sys, 'frozen', False):
         return os.path.dirname(os.path.abspath(sys.executable))
     return os.path.dirname(os.path.abspath(__file__))
+
+def sync_live_session_to_companion(is_active=False, subject="#Focus", duration_minutes=0, remaining_seconds=0, is_paused=False, is_overtime=False):
+    try:
+        live_file = os.path.join(get_app_dir(), "focus_live_session.json")
+        now = time.time()
+        state = {
+            "is_active": is_active,
+            "subject": subject,
+            "duration_minutes": duration_minutes,
+            "started_at": now,
+            "target_end_at": now + remaining_seconds,
+            "remaining_seconds": remaining_seconds,
+            "is_paused": is_paused,
+            "is_overtime": is_overtime
+        }
+        with open(live_file, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+    except Exception:
+        pass
+
+def is_bridge_running(port=5050):
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(0.3)
+        res = s.connect_ex(('127.0.0.1', port))
+        s.close()
+        return res == 0
+    except Exception:
+        return False
+
+def get_companion_lan_ip():
+    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        s.connect(('10.255.255.255', 1))
+        ip = s.getsockname()[0]
+    except Exception:
+        try:
+            ip = socket.gethostbyname(socket.gethostname())
+        except Exception:
+            ip = '127.0.0.1'
+    finally:
+        s.close()
+    return ip
+
+def get_python_exe():
+    if not getattr(sys, 'frozen', False):
+        return sys.executable
+    candidates = [
+        r"C:\Users\pasmu\AppData\Local\Python\pythoncore-3.14-64\pythonw.exe",
+        r"C:\Users\pasmu\AppData\Local\Python\pythoncore-3.14-64\python.exe",
+        shutil.which("pythonw"),
+        shutil.which("python"),
+    ]
+    for c in candidates:
+        if c and os.path.exists(c):
+            return c
+    return "python"
+
+def ensure_companion_bridge_started():
+    if is_bridge_running(5050):
+        return True
+    try:
+        app_dir = get_app_dir()
+        bridge_script = os.path.join(app_dir, "mobile_companion", "sync_bridge", "bridge_server.py")
+        if os.path.exists(bridge_script):
+            creationflags = 0
+            if sys.platform == 'win32':
+                creationflags = subprocess.CREATE_NO_WINDOW
+            py_exe = get_python_exe()
+            subprocess.Popen([py_exe, bridge_script], creationflags=creationflags)
+            return True
+    except Exception as e:
+        print(f"[FocusFlow] Could not auto-start bridge: {e}")
+    return False
+
+
 
 # --- Admin Status Check & Relaunch ---
 def is_admin():
@@ -2087,6 +2165,12 @@ class FocusApp:
         if self.ical_subscription_url:
             threading.Thread(target=self.auto_sync_ical_subscription, daemon=True).start()
 
+        # Auto-launch Mobile Companion Sync Bridge
+        threading.Thread(target=ensure_companion_bridge_started, daemon=True).start()
+
+        # Two-way sync loop with companion app
+        self.root.after(1500, self.check_companion_sync_loop)
+
         # Pre-Scheduled Session Warning & Countdown Poller Loop
         self.root.after(2000, self.check_scheduled_session_loop)
 
@@ -2098,6 +2182,7 @@ class FocusApp:
             self.root.after(400, self.check_pre_designated_session)
             self.root.after(1000, self.auto_check_upcoming_deadlines)
             self.root.after(3500, lambda: self.check_for_updates(silent=True))
+
 
     def auto_sync_ical_subscription(self):
         if not self.ical_subscription_url:
@@ -2203,6 +2288,12 @@ class FocusApp:
                 bat_path = os.path.join(tempfile.gettempdir(), "focus_update_swap.bat")
                 bat_content = f"""@echo off
 setlocal EnableDelayedExpansion
+:: Clear PyInstaller internal bootloader variables so the newly started process unpacks fresh
+set _PYI_APPLICATION_HOME_DIR=
+set _PYI_ARCHIVE_FILE=
+set _PYI_PARENT_PROCESS_LEVEL=
+set _PYI_SPLASH_IPC=
+set _MEIPASS2=
 set attempts=0
 :WAIT_LOOP
 timeout /t 1 /nobreak > nul
@@ -2218,7 +2309,13 @@ del "%~f0"
                 with open(bat_path, "w", encoding="utf-8") as f:
                     f.write(bat_content)
 
-                subprocess.Popen(["cmd.exe", "/c", bat_path], shell=False, creationflags=0x08000000 if os.name == 'nt' else 0)
+                # Clean environment dictionary to prevent child processes from inheriting PyInstaller internal paths
+                clean_env = os.environ.copy()
+                for k in list(clean_env.keys()):
+                    if k.startswith("_PYI") or "MEIPASS" in k:
+                        del clean_env[k]
+
+                subprocess.Popen(["cmd.exe", "/c", bat_path], shell=False, env=clean_env, creationflags=0x08000000 if os.name == 'nt' else 0)
                 self.root.after(200, lambda: (self.root.destroy(), sys.exit(0)))
             except Exception as e:
                 prog_win.after(0, lambda: (prog_win.destroy(), messagebox.showerror("Update Failed", f"Failed to download update:\n{e}")))
@@ -2409,6 +2506,85 @@ del "%~f0"
         elif self.streak_count >= 3: return 1.05
         return 1.0
 
+    def check_companion_sync_loop(self):
+        try:
+            live_file = os.path.join(get_app_dir(), "focus_live_session.json")
+            if os.path.exists(live_file):
+                with open(live_file, "r", encoding="utf-8") as f:
+                    state = json.load(f)
+                
+                is_active = state.get("is_active", False)
+                if is_active and not self.is_running:
+                    # Remote start triggered from companion app
+                    mins = state.get("duration_minutes", 30)
+                    subj = state.get("subject", self.current_subject)
+                    self.selected_minutes = mins
+                    self.drag_float_minutes = float(mins)
+                    self.current_subject = subj
+                    if hasattr(self, 'subj_var'):
+                        self.subj_var.set(subj)
+                    self.sync_minute_entry()
+                    self.start_timer()
+                elif not is_active and self.is_running and not getattr(self, 'is_break', False):
+                    # Remote emergency stop triggered from companion app
+                    elapsed_seconds = (self.selected_minutes * 60) - self.time_left
+                    elapsed_minutes = elapsed_seconds // 60
+                    if elapsed_minutes > 0 and not self.is_break:
+                        reward_m = int(round(elapsed_minutes * self.overtime_multiplier)) if self.is_overtime else elapsed_minutes
+                        self.record_completed_session(elapsed_minutes, completed=False, reward_minutes=reward_m)
+                    self.is_running = False
+                    self.reset_to_setup_view()
+        except Exception:
+            pass
+        finally:
+            self.root.after(1500, self.check_companion_sync_loop)
+
+    def open_mobile_sync_dialog(self):
+        ip = get_companion_lan_ip()
+        running = is_bridge_running(5050)
+        status_text = "🟢 Online (Port 5050)" if running else "🟡 Starting Bridge..."
+        
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Mobile Companion Sync")
+        dialog.geometry("380x370")
+        dialog.configure(bg="#121212")
+        dialog.resizable(False, False)
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        tk.Label(dialog, text="📱 Mobile Companion Sync", font=("Segoe UI", 12, "bold"), bg="#121212", fg="#ffffff").pack(pady=(16, 6))
+        
+        card = tk.Frame(dialog, bg="#1a1a1a", padx=16, pady=12, highlightbackground="#2a2a2a", highlightthickness=1)
+        card.pack(fill=tk.X, padx=20, pady=8)
+
+        tk.Label(card, text="Bridge Server Status:", font=("Segoe UI", 9, "bold"), bg="#1a1a1a", fg="#aaaaaa").pack(anchor="w")
+        tk.Label(card, text=status_text, font=("Segoe UI", 10, "bold"), bg="#1a1a1a", fg="#00e676" if running else "#ff9800").pack(anchor="w", pady=(2, 8))
+
+        tk.Label(card, text="Phone Connection Address:", font=("Segoe UI", 9, "bold"), bg="#1a1a1a", fg="#aaaaaa").pack(anchor="w")
+        ip_entry = tk.Entry(card, font=("Consolas", 11, "bold"), bg="#252525", fg="#6366f1", bd=0, justify="center")
+        ip_entry.insert(0, f"{ip}:5050")
+        ip_entry.configure(state="readonly")
+        ip_entry.pack(fill=tk.X, pady=(4, 8), ipady=4)
+
+        def copy_ip():
+            self.root.clipboard_clear()
+            self.root.clipboard_append(f"{ip}:5050")
+            btn_copy.config(text="✓ Copied to Clipboard!")
+            dialog.after(1500, lambda: btn_copy.config(text="📋 Copy Address"))
+
+        btn_copy = tk.Button(card, text="📋 Copy Address", font=("Segoe UI", 8, "bold"), bg="#333333", fg="#ffffff", relief="flat", command=copy_ip)
+        btn_copy.pack(fill=tk.X, pady=2)
+
+        info = (
+            "1. Install focusflow-companion.apk on your phone.\n"
+            "2. Enter the address above in the companion app.\n"
+            "3. Starting study on PC automatically mutes phone\n"
+            "   alerts and closes doomscrolling apps!"
+        )
+        tk.Label(dialog, text=info, font=("Segoe UI", 8), bg="#121212", fg="#888888", justify="left").pack(padx=20, pady=(8, 14), anchor="w")
+
+        tk.Button(dialog, text="Close", font=("Segoe UI", 9, "bold"), bg="#6366f1", fg="#ffffff", relief="flat", command=dialog.destroy, padx=20, pady=4).pack()
+
     def build_ui(self):
         if not is_admin():
             self.admin_banner = tk.Frame(self.root, bg="#ff9800", pady=3)
@@ -2430,6 +2606,10 @@ del "%~f0"
 
         self.settings_btn = tk.Button(self.top_card, text="⚙ Stats & Settings", font=("Segoe UI", 8, "bold"), bg="#1f1f1f", fg="#ffffff", activebackground="#333333", activeforeground="white", relief="flat", padx=8, command=self.open_settings)
         self.settings_btn.pack(side=tk.RIGHT, padx=8, pady=6)
+
+        self.mobile_sync_btn = tk.Button(self.top_card, text="📱 Phone Sync", font=("Segoe UI", 8, "bold"), bg="#1f1f1f", fg="#818cf8", activebackground="#333333", activeforeground="#a5b4fc", relief="flat", padx=8, command=self.open_mobile_sync_dialog)
+        self.mobile_sync_btn.pack(side=tk.RIGHT, padx=(0, 4), pady=6)
+
 
         # Next Imminent Deadline & Recommendation Banner
         self.deadline_banner = tk.Frame(self.root, bg="#14141e", highlightbackground="#ff9800", highlightthickness=1)
@@ -3528,6 +3708,15 @@ del "%~f0"
         self.clock_checks = 0
         self.last_clock_check_click = 0
 
+        sync_live_session_to_companion(
+            is_active=True,
+            subject=self.current_subject,
+            duration_minutes=self.selected_minutes,
+            remaining_seconds=self.time_left,
+            is_overtime=getattr(self, 'is_overtime', False)
+        )
+
+
         # Fresh session chain initialization
         if not getattr(self, 'is_overtime', False):
             self.continuation_count = 0
@@ -3661,6 +3850,13 @@ del "%~f0"
 
             if not self.is_break and self.time_left % 5 == 0:
                 self.enforce_rules()
+                sync_live_session_to_companion(
+                    is_active=True,
+                    subject=self.current_subject,
+                    duration_minutes=self.selected_minutes,
+                    remaining_seconds=self.time_left,
+                    is_overtime=getattr(self, 'is_overtime', False)
+                )
 
             self.time_left -= 1
             self.root.after(1000, self.update_loop)
@@ -3748,6 +3944,8 @@ del "%~f0"
                     self.reset_to_setup_view()
 
     def reset_to_setup_view(self):
+        self.is_running = False
+        sync_live_session_to_companion(False)
         self.unblock_websites()
         self.is_overtime = False
         self.overtime_multiplier = 1.0
