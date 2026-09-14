@@ -20,6 +20,11 @@ import shutil
 from datetime import datetime, timedelta, date
 from collections import Counter
 
+if sys.stdout is None:
+    sys.stdout = open(os.devnull, 'w')
+if sys.stderr is None:
+    sys.stderr = open(os.devnull, 'w')
+
 # --- Application Info & Versioning ---
 APP_VERSION = "1.0.4"
 GITHUB_REPO = "caecitas-glitch/Study-focus-app"
@@ -117,9 +122,43 @@ def get_python_exe():
             return c
     return "python"
 
+def ensure_apk_extracted():
+    """Extracts bundled focusflow-companion.apk to mobile_companion/ folder if missing."""
+    try:
+        app_dir = get_app_dir()
+        target_dir = os.path.join(app_dir, "mobile_companion")
+        target_apk = os.path.join(target_dir, "focusflow-companion.apk")
+        if os.path.exists(target_apk):
+            return
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            src_apk = os.path.join(sys._MEIPASS, "mobile_companion", "focusflow-companion.apk")
+            if not os.path.exists(src_apk):
+                src_apk = os.path.join(sys._MEIPASS, "focusflow-companion.apk")
+            if os.path.exists(src_apk):
+                os.makedirs(target_dir, exist_ok=True)
+                shutil.copy2(src_apk, target_apk)
+    except Exception as e:
+        print(f"[FocusFlow] Error extracting bundled APK: {e}")
+
 def ensure_companion_bridge_started():
     if is_bridge_running(5050):
         return True
+
+    ensure_apk_extracted()
+
+    # 1. First priority: start embedded bridge server in a background thread inside this app!
+    try:
+        from mobile_companion.sync_bridge import bridge_server
+        t = threading.Thread(target=bridge_server.start_embedded_server, daemon=True)
+        t.start()
+        for _ in range(15):
+            time.sleep(0.1)
+            if is_bridge_running(5050):
+                return True
+    except Exception as e:
+        print(f"[FocusFlow] Embedded bridge thread failed: {e}")
+
+    # 2. Fallback: try external process if Python is available on the machine
     try:
         app_dir = get_app_dir()
         bridge_script = os.path.join(app_dir, "mobile_companion", "sync_bridge", "bridge_server.py")
@@ -131,7 +170,7 @@ def ensure_companion_bridge_started():
             subprocess.Popen([py_exe, bridge_script], creationflags=creationflags)
             return True
     except Exception as e:
-        print(f"[FocusFlow] Could not auto-start bridge: {e}")
+        print(f"[FocusFlow] Subprocess bridge start failed: {e}")
     return False
 
 
