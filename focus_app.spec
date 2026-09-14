@@ -1,11 +1,22 @@
 # -*- mode: python ; coding: utf-8 -*-
 
+
 a = Analysis(
-    ['Focus_app.pyw'],
-    pathex=[],
+    ['A:\\Study app\\Focus_app.pyw'],
+    pathex=['A:\\Study app'],
     binaries=[],
-    datas=[],
-    hiddenimports=[],
+    datas=[
+        ('A:\\Study app\\mobile_companion\\focusflow-companion.apk', 'mobile_companion'),
+    ],
+    hiddenimports=[
+        'flask',
+        'werkzeug',
+        'jinja2',
+        'psutil',
+        'mobile_companion',
+        'mobile_companion.sync_bridge',
+        'mobile_companion.sync_bridge.bridge_server',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
