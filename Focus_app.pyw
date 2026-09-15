@@ -381,6 +381,35 @@ def fetch_ical_from_url(url):
         with urllib.request.urlopen(req, context=ctx, timeout=15) as response:
             return response.read().decode('utf-8', errors='ignore')
 
+def parse_ics_datetime(val):
+    val = val.strip().replace('Z', '')
+    for fmt in ('%Y%m%dT%H%M%S', '%Y%m%dT%H%M'):
+        try:
+            return datetime.strptime(val, fmt), True
+        except ValueError:
+            pass
+    for fmt in ('%Y%m%d',):
+        try:
+            return datetime.strptime(val, fmt), False
+        except ValueError:
+            pass
+    m = re.search(r'(\d{8})(?:T(\d{2})(\d{2})(\d{2})?)?', val)
+    if m:
+        try:
+            if m.group(2) and m.group(3):
+                sec = m.group(4) or '00'
+                dt = datetime.strptime(m.group(1) + m.group(2) + m.group(3) + sec, '%Y%m%d%H%M%S')
+                return dt, True
+            else:
+                return datetime.strptime(m.group(1), '%Y%m%d'), False
+        except Exception:
+            pass
+    return None, False
+
+def parse_ics_date_str(val):
+    dt, _ = parse_ics_datetime(val)
+    return dt
+
 def parse_ics_content(content):
     events = []
     lines = content.replace('\r\n', '\n').split('\n')
@@ -396,13 +425,18 @@ def parse_ics_content(content):
     in_event = False
     current_event = {}
     
+    exam_keywords = ('tentti', 'exam', 'koe', 'uusintatentti', 'välikoe', 'loppukoe', 'midterm', 'final')
+
     for line in unfolded_lines:
         line = line.strip()
         if line == 'BEGIN:VEVENT':
             in_event = True
-            current_event = {"completed": False}
+            current_event = {"completed": False, "is_exam": False}
         elif line == 'END:VEVENT':
             if in_event and 'summary' in current_event and 'due' in current_event:
+                s_lower = current_event['summary'].lower()
+                if any(kw in s_lower for kw in exam_keywords):
+                    current_event['is_exam'] = True
                 events.append(current_event)
             in_event = False
         elif in_event and ':' in line:
@@ -414,26 +448,22 @@ def parse_ics_content(content):
             elif key == 'UID':
                 current_event['uid'] = val.strip()
             elif key in ('DTEND', 'DTSTART', 'DUE'):
-                if 'due' not in current_event or key in ('DTEND', 'DUE'):
-                    dt = parse_ics_date_str(val)
-                    if dt:
-                        current_event['due'] = dt.strftime('%Y-%m-%d')
+                dt, has_time = parse_ics_datetime(val)
+                if dt:
+                    d_str = dt.strftime('%Y-%m-%d')
+                    t_str = dt.strftime('%H:%M') if has_time else ""
+                    if key == 'DTSTART':
+                        current_event['start_date'] = d_str
+                        if t_str:
+                            current_event['start_time'] = t_str
+                        if 'due' not in current_event:
+                            current_event['due'] = d_str
+                    elif key in ('DTEND', 'DUE'):
+                        current_event['end_date'] = d_str
+                        if t_str:
+                            current_event['end_time'] = t_str
+                        current_event['due'] = d_str
     return events
-
-def parse_ics_date_str(val):
-    val = val.strip().replace('Z', '')
-    for fmt in ('%Y%m%dT%H%M%S', '%Y%m%d'):
-        try:
-            return datetime.strptime(val, fmt)
-        except ValueError:
-            pass
-    m = re.search(r'(\d{8})', val)
-    if m:
-        try:
-            return datetime.strptime(m.group(1), '%Y%m%d')
-        except ValueError:
-            pass
-    return None
 
 def merge_calendar_events(existing_deadlines, new_events):
     """
@@ -441,7 +471,7 @@ def merge_calendar_events(existing_deadlines, new_events):
     - Matches by UID if available.
     - Matches by summary for single-occurrence events (updating due date if rescheduled).
     - Matches by (summary, due) for repeating generic titles (e.g. attendance).
-    - Preserves existing course tags and completion statuses.
+    - Preserves existing course tags, completion statuses, and exam properties.
     - Deduplicates multiple existing entries with identical summaries.
     - Preserves user-created manual tasks that are not in the calendar feed.
     Returns (merged_list, added_count, updated_count).
@@ -451,6 +481,7 @@ def merge_calendar_events(existing_deadlines, new_events):
     existing_tags = {}
     existing_completed = set()
     existing_attendance = set()
+    existing_exam_info = {}
     for d in existing_deadlines:
         s_low = d.get("summary", "").strip().lower()
         if d.get("tag") and s_low not in existing_tags:
@@ -459,6 +490,14 @@ def merge_calendar_events(existing_deadlines, new_events):
             existing_completed.add((s_low, d.get("due")))
         if d.get("is_attendance"):
             existing_attendance.add(s_low)
+        if d.get("is_exam") and s_low not in existing_exam_info:
+            existing_exam_info[s_low] = {
+                "is_exam": True,
+                "start_time": d.get("start_time", ""),
+                "end_time": d.get("end_time", ""),
+                "start_date": d.get("start_date", ""),
+                "end_date": d.get("end_date", "")
+            }
 
     merged = []
     used_existing = set()
@@ -495,12 +534,28 @@ def merge_calendar_events(existing_deadlines, new_events):
         completed = False
         tag = None
         is_attendance = False
+        is_exam = e.get("is_exam", False)
+        start_time = e.get("start_time", "")
+        end_time = e.get("end_time", "")
+        start_date = e.get("start_date", "")
+        end_date = e.get("end_date", "")
+
         if matched:
             idx, d = matched
             used_existing.add(idx)
             completed = d.get("completed", False)
             tag = d.get("tag")
             is_attendance = d.get("is_attendance", False)
+            if "is_exam" in d:
+                is_exam = d.get("is_exam", False)
+            if d.get("start_time"):
+                start_time = d.get("start_time")
+            if d.get("end_time"):
+                end_time = d.get("end_time")
+            if d.get("start_date"):
+                start_date = d.get("start_date")
+            if d.get("end_date"):
+                end_date = d.get("end_date")
             if d.get("due") != e["due"]:
                 updated_count += 1
         else:
@@ -515,13 +570,34 @@ def merge_calendar_events(existing_deadlines, new_events):
         if not is_attendance and (s_low in existing_attendance or "läsnäolo" in s_low or "attendance" in s_low):
             is_attendance = True
 
+        if not is_exam and s_low in existing_exam_info:
+            ex_inf = existing_exam_info[s_low]
+            is_exam = True
+            if not start_time:
+                start_time = ex_inf.get("start_time", "")
+            if not end_time:
+                end_time = ex_inf.get("end_time", "")
+            if not start_date:
+                start_date = ex_inf.get("start_date", "")
+            if not end_date:
+                end_date = ex_inf.get("end_date", "")
+
         item = {
             "completed": completed,
             "summary": e["summary"],
             "due": e["due"],
             "uid": e.get("uid", ""),
-            "is_attendance": is_attendance
+            "is_attendance": is_attendance,
+            "is_exam": is_exam
         }
+        if start_time:
+            item["start_time"] = start_time
+        if end_time:
+            item["end_time"] = end_time
+        if start_date:
+            item["start_date"] = start_date
+        if end_date:
+            item["end_date"] = end_date
         if tag:
             item["tag"] = tag
         merged.append(item)
@@ -1154,34 +1230,67 @@ class UpcomingDeadlinesWindow(tk.Toplevel):
         for item in deadlines:
             due_date = datetime.strptime(item["due"], "%Y-%m-%d").date()
             days_left = (due_date - today).days
+            is_exam = item.get("is_exam", False)
 
-            if days_left < 0:
-                badge_txt = f"❌ Overdue {abs(days_left)}d!"
-                badge_bg = "#b71c1c"
-            elif days_left == 0:
-                badge_txt = "🚨 DUE TODAY!"
-                badge_bg = "#e53935"
-            elif days_left == 1:
-                badge_txt = "🔥 Due Tomorrow!"
-                badge_bg = "#f57c00"
+            if is_exam:
+                row_bg = "#231f13"
+                row_border = "#ffd700"
+                border_thick = 2
+                if days_left < 0:
+                    badge_txt = f"🎓 EXAM OVERDUE {abs(days_left)}d!"
+                    badge_bg = "#b71c1c"
+                elif days_left == 0:
+                    badge_txt = "🎓 EXAM TODAY!"
+                    badge_bg = "#e53935"
+                elif days_left == 1:
+                    badge_txt = "🎓 EXAM TOMORROW!"
+                    badge_bg = "#ff9800"
+                else:
+                    badge_txt = f"🎓 EXAM in {days_left}d"
+                    badge_bg = "#ffd700"
             else:
-                badge_txt = f"⚠️ Due in {days_left}d"
-                badge_bg = "#fbc02d"
+                row_bg = "#1c1c28"
+                row_border = "#2d2d3f"
+                border_thick = 1
+                if days_left < 0:
+                    badge_txt = f"❌ Overdue {abs(days_left)}d!"
+                    badge_bg = "#b71c1c"
+                elif days_left == 0:
+                    badge_txt = "🚨 DUE TODAY!"
+                    badge_bg = "#e53935"
+                elif days_left == 1:
+                    badge_txt = "🔥 Due Tomorrow!"
+                    badge_bg = "#f57c00"
+                else:
+                    badge_txt = f"⚠️ Due in {days_left}d"
+                    badge_bg = "#fbc02d"
 
-            row = tk.Frame(scrollable_frame, bg="#1c1c28", highlightbackground="#2d2d3f", highlightthickness=1)
+            row = tk.Frame(scrollable_frame, bg=row_bg, highlightbackground=row_border, highlightthickness=border_thick)
             row.pack(fill=tk.X, pady=4, padx=5)
 
-            info_f = tk.Frame(row, bg="#1c1c28")
+            info_f = tk.Frame(row, bg=row_bg)
             info_f.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=8, pady=6)
 
-            tk.Label(info_f, text=item["summary"], font=("Segoe UI", 9, "bold"), bg="#1c1c28", fg="#ffffff", wraplength=260, justify="left").pack(anchor="w")
-            tk.Label(info_f, text=f"Due Date: {item['due']}", font=("Segoe UI", 8), bg="#1c1c28", fg="#888888").pack(anchor="w")
+            title_fg = "#ffd700" if is_exam else "#ffffff"
+            title_prefix = "🎓 EXAM: " if is_exam else "📝 "
+            tk.Label(info_f, text=title_prefix + item["summary"], font=("Segoe UI", 9, "bold"), bg=row_bg, fg=title_fg, wraplength=250, justify="left").pack(anchor="w")
+
+            due_lbl_txt = f"Date: {item['due']}"
+            if is_exam and (item.get("start_time") or item.get("end_time")):
+                st = item.get("start_time", "")
+                et = item.get("end_time", "")
+                if st and et:
+                    due_lbl_txt += f"  •  🕒 {st} – {et}"
+                elif st:
+                    due_lbl_txt += f"  •  🕒 starts {st}"
+
+            tk.Label(info_f, text=due_lbl_txt, font=("Segoe UI", 8, "bold" if is_exam else "normal"), bg=row_bg, fg="#ffb74d" if is_exam else "#888888").pack(anchor="w")
 
             # Course tag dropdown for this deadline
             if self.app and hasattr(self.app, 'custom_tags'):
-                tag_row = tk.Frame(info_f, bg="#1c1c28")
+                tag_row = tk.Frame(info_f, bg=row_bg)
                 tag_row.pack(anchor="w", pady=(2, 0))
-                tk.Label(tag_row, text="Course:", font=("Segoe UI", 7, "bold"), bg="#1c1c28", fg="#00bcd4").pack(side=tk.LEFT, padx=(0, 3))
+                tk.Label(tag_row, text="Course:", font=("Segoe UI", 7, "bold"), bg=row_bg, fg="#00bcd4").pack(side=tk.LEFT, padx=(0, 3))
                 tag_cb = ttk.Combobox(tag_row, values=["-- None --"] + self.app.custom_tags, width=19, state="readonly", font=("Segoe UI", 7))
                 cur_tag = item.get("tag")
                 if cur_tag and cur_tag in self.app.custom_tags:
@@ -1201,13 +1310,13 @@ class UpcomingDeadlinesWindow(tk.Toplevel):
                 tag_cb.bind("<<ComboboxSelected>>", on_tag_changed)
                 tag_cb.pack(side=tk.LEFT)
 
-            ctrl_f = tk.Frame(row, bg="#1c1c28")
+            ctrl_f = tk.Frame(row, bg=row_bg)
             ctrl_f.pack(side=tk.RIGHT, padx=6, pady=4)
 
-            badge_fg = "black" if badge_bg == "#fbc02d" else "white"
+            badge_fg = "black" if badge_bg in ("#fbc02d", "#ffd700") else "white"
             tk.Label(ctrl_f, text=badge_txt, font=("Segoe UI", 7, "bold"), bg=badge_bg, fg=badge_fg, padx=5, pady=2).pack(side=tk.TOP, anchor="e", pady=(0, 3))
 
-            btn_row = tk.Frame(ctrl_f, bg="#1c1c28")
+            btn_row = tk.Frame(ctrl_f, bg=row_bg)
             btn_row.pack(side=tk.BOTTOM, anchor="e")
 
             def mark_done(it=item, r=row):
@@ -1222,7 +1331,8 @@ class UpcomingDeadlinesWindow(tk.Toplevel):
                     self.app.save_data()
                 r.destroy()
 
-            tk.Button(btn_row, text="✓ Done", font=("Segoe UI", 7, "bold"), bg="#2e7d32", fg="white", relief="flat", padx=4, pady=1, command=mark_done).pack(side=tk.LEFT, padx=2)
+            done_btn_text = "✓ Passed" if is_exam else "✓ Done"
+            tk.Button(btn_row, text=done_btn_text, font=("Segoe UI", 7, "bold"), bg="#2e7d32", fg="white", relief="flat", padx=4, pady=1, command=mark_done).pack(side=tk.LEFT, padx=2)
             tk.Button(btn_row, text="🗑️", font=("Segoe UI", 7), bg="#333333", fg="#f44336", relief="flat", padx=3, pady=1, command=del_deadline).pack(side=tk.LEFT, padx=2)
 
         action_bar = tk.Frame(self, bg="#0d0d15")
@@ -1238,6 +1348,335 @@ class UpcomingDeadlinesWindow(tk.Toplevel):
         self.destroy()
         if self.on_dismiss_callback:
             self.on_dismiss_callback()
+
+
+# --- Exam Milestone & Timeline Helpers ---
+def get_exam_base_title(summary):
+    if not summary:
+        return ""
+    cleaned = re.sub(r'\s*(?:avautuu|pitäisi olla tehtynä|pitaisi olla tehtyna|sulkeutuu|sulkeutua).*$', '', summary, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\s*klo\s*\d{1,2}[.:]\d{2}.*$', '', cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r'\s*DL\s*\d{1,2}[.:]\d{1,2}(?:[.:]\d{2,4})?.*$', '', cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+def get_exam_timeline(item, all_deadlines=None):
+    today = datetime.now().date()
+    s_date = item.get("start_date") or ""
+    s_time = item.get("start_time") or ""
+    t_date = item.get("target_date") or ""
+    t_time = item.get("target_time") or ""
+    e_date = item.get("end_date") or item.get("due") or ""
+    e_time = item.get("end_time") or ""
+
+    # Check companion milestones from feed if any dates are missing
+    if all_deadlines:
+        base = get_exam_base_title(item.get("summary", "")).lower()
+        if base and len(base) > 4:
+            for sib in all_deadlines:
+                sib_sum = sib.get("summary", "").lower()
+                if get_exam_base_title(sib_sum) == base:
+                    sib_due = sib.get("due", "")
+                    sib_time = sib.get("start_time") or sib.get("end_time") or ""
+                    if not sib_time:
+                        t_m = re.search(r'klo\s*(\d{1,2})[.:](\d{2})', sib_sum)
+                        if t_m:
+                            sib_time = f"{int(t_m.group(1)):02d}:{int(t_m.group(2)):02d}"
+                    if any(w in sib_sum for w in ('avautuu', 'opens', 'alkaa')):
+                        if not s_date: s_date = sib_due
+                        if not s_time: s_time = sib_time
+                    elif any(w in sib_sum for w in ('pitäisi olla', 'pitaisi olla', 'done by', 'target')):
+                        if not t_date: t_date = sib_due
+                        if not t_time: t_time = sib_time
+                    elif any(w in sib_sum for w in ('sulkeutuu', 'closes', 'päättyy')):
+                        if not e_date or e_date == item.get("due"): e_date = sib_due
+                        if not e_time: e_time = sib_time
+
+    parts = []
+    if s_date:
+        parts.append(f"🟢 Opens: {s_date[5:] if len(s_date)>=10 else s_date}{(' ' + s_time) if s_time else ''}")
+    if t_date:
+        parts.append(f"🎯 Target: {t_date[5:] if len(t_date)>=10 else t_date}{(' ' + t_time) if t_time else ''}")
+    if e_date:
+        parts.append(f"🚨 Closes: {e_date[5:] if len(e_date)>=10 else e_date}{(' ' + e_time) if e_time else ''}")
+
+    timeline_str = "  ➔  ".join(parts) if len(parts) > 1 else ""
+
+    status_label = ""
+    active_phase = "open"
+    days_left = None
+
+    try:
+        dt_start = datetime.strptime(s_date, "%Y-%m-%d").date() if s_date else None
+        dt_target = datetime.strptime(t_date, "%Y-%m-%d").date() if t_date else None
+        dt_end = datetime.strptime(e_date, "%Y-%m-%d").date() if e_date else None
+
+        if dt_start and today < dt_start:
+            diff = (dt_start - today).days
+            days_left = diff
+            active_phase = "upcoming"
+            status_label = f"Opens in {diff}d" + (f" ({s_time})" if s_time else "")
+        elif dt_target and today < dt_target:
+            diff = (dt_target - today).days
+            days_left = diff
+            active_phase = "target"
+            status_label = f"Open Now • Target in {diff}d" + (f" ({t_date})" if len(parts)>1 else "")
+        elif dt_end:
+            diff = (dt_end - today).days
+            days_left = diff
+            if diff > 0:
+                active_phase = "closing"
+                status_label = f"🚨 Closes in {diff}d" + (f" ({e_time})" if e_time else "")
+            elif diff == 0:
+                active_phase = "closing_today"
+                status_label = f"🚨 CLOSES TODAY" + (f" at {e_time}" if e_time else "!")
+            else:
+                active_phase = "overdue"
+                status_label = f"Closed {abs(diff)}d ago"
+    except Exception:
+        pass
+
+    return {
+        "start_date": s_date, "start_time": s_time,
+        "target_date": t_date, "target_time": t_time,
+        "end_date": e_date, "end_time": e_time,
+        "timeline_str": timeline_str,
+        "status_label": status_label,
+        "active_phase": active_phase,
+        "days_left": days_left
+    }
+
+
+# --- Exam Details Modal Dialog ---
+class ExamDetailsModal(tk.Toplevel):
+    def __init__(self, parent, deadline_item, on_save_callback):
+        super().__init__(parent)
+        self.item = deadline_item
+        self.on_save_callback = on_save_callback
+        self.title("🎓 Exam Schedule & Milestones")
+        self.geometry("450x540")
+        self.configure(bg="#12121c")
+        self.resizable(False, False)
+        self.transient(parent)
+        self.grab_set()
+
+        # Header
+        header = tk.Frame(self, bg="#12121c")
+        header.pack(fill=tk.X, padx=16, pady=(16, 6))
+        tk.Label(header, text="🎓 Exam Schedule & 3-Stage Milestones", font=("Segoe UI", 12, "bold"), bg="#12121c", fg="#ffd700").pack(anchor="w")
+        tk.Label(header, text="Track all 3 exam phases: Opens, Target (Done by), and Closes.", font=("Segoe UI", 8), bg="#12121c", fg="#8888aa").pack(anchor="w", pady=(2, 0))
+
+        # Task summary card
+        sum_card = tk.Frame(self, bg="#1a1a28", highlightbackground="#2c2c3e", highlightthickness=1)
+        sum_card.pack(fill=tk.X, padx=16, pady=(4, 8))
+        tk.Label(sum_card, text="Task:", font=("Segoe UI", 8, "bold"), bg="#1a1a28", fg="#00bcd4").pack(anchor="w", padx=10, pady=(6, 1))
+        tk.Label(sum_card, text=self.item.get("summary", ""), font=("Segoe UI", 9), bg="#1a1a28", fg="#ffffff", wraplength=410, justify="left").pack(anchor="w", padx=10, pady=(0, 6))
+
+        # Form Frame
+        form = tk.Frame(self, bg="#12121c")
+        form.pack(fill=tk.BOTH, expand=True, padx=16, pady=2)
+
+        # Is Exam Checkbutton
+        self.is_exam_var = tk.BooleanVar(value=self.item.get("is_exam", True))
+        cb = tk.Checkbutton(
+            form,
+            text="Mark this item as an Exam / Test",
+            variable=self.is_exam_var,
+            font=("Segoe UI", 9, "bold"),
+            bg="#12121c",
+            fg="#ffd700",
+            selectcolor="#000000",
+            activebackground="#12121c",
+            activeforeground="#ffd700"
+        )
+        cb.pack(anchor="w", pady=(0, 6))
+
+        # Dates & Times Grid (3 Deadlines)
+        grid_f = tk.Frame(form, bg="#181826", highlightbackground="#28283a", highlightthickness=1)
+        grid_f.pack(fill=tk.X, pady=(0, 8), padx=2, ipady=4)
+
+        cur_start_date = self.item.get("start_date") or self.item.get("due") or datetime.now().strftime("%Y-%m-%d")
+        cur_target_date = self.item.get("target_date") or ""
+        cur_end_date = self.item.get("end_date") or self.item.get("due") or cur_start_date
+        cur_start_time = self.item.get("start_time") or "09:00"
+        cur_target_time = self.item.get("target_time") or "18:00"
+        cur_end_time = self.item.get("end_time") or "18:00"
+
+        # 1. Exam Opens / Starts
+        tk.Label(grid_f, text="🟢 1. Exam Opens / Starts Date:", font=("Segoe UI", 8, "bold"), bg="#181826", fg="#4CAF50").grid(row=0, column=0, sticky="w", padx=10, pady=(6, 2))
+        self.start_date_entry = tk.Entry(grid_f, bg="#242436", fg="white", insertbackground="white", font=("Segoe UI", 9), bd=0, width=14)
+        self.start_date_entry.insert(0, cur_start_date)
+        self.start_date_entry.grid(row=1, column=0, padx=10, pady=(0, 6), sticky="w")
+
+        tk.Label(grid_f, text="Opens Time (HH:MM):", font=("Segoe UI", 8, "bold"), bg="#181826", fg="#4CAF50").grid(row=0, column=1, sticky="w", padx=10, pady=(6, 2))
+        self.start_time_entry = tk.Entry(grid_f, bg="#242436", fg="#4CAF50", insertbackground="white", font=("Segoe UI", 9, "bold"), bd=0, width=12)
+        self.start_time_entry.insert(0, cur_start_time)
+        self.start_time_entry.grid(row=1, column=1, padx=10, pady=(0, 6), sticky="w")
+
+        # 2. Should Be Done By (Target)
+        tk.Label(grid_f, text="🎯 2. Should Be Done By (Target Date):", font=("Segoe UI", 8, "bold"), bg="#181826", fg="#00bcd4").grid(row=2, column=0, sticky="w", padx=10, pady=(4, 2))
+        self.target_date_entry = tk.Entry(grid_f, bg="#242436", fg="white", insertbackground="white", font=("Segoe UI", 9), bd=0, width=14)
+        self.target_date_entry.insert(0, cur_target_date)
+        self.target_date_entry.grid(row=3, column=0, padx=10, pady=(0, 6), sticky="w")
+
+        tk.Label(grid_f, text="Target Time (HH:MM):", font=("Segoe UI", 8, "bold"), bg="#181826", fg="#00bcd4").grid(row=2, column=1, sticky="w", padx=10, pady=(4, 2))
+        self.target_time_entry = tk.Entry(grid_f, bg="#242436", fg="#00bcd4", insertbackground="white", font=("Segoe UI", 9, "bold"), bd=0, width=12)
+        self.target_time_entry.insert(0, cur_target_time)
+        self.target_time_entry.grid(row=3, column=1, padx=10, pady=(0, 6), sticky="w")
+
+        # 3. Exam Closes / Deadline
+        tk.Label(grid_f, text="🚨 3. Exam Closes (Final Deadline):", font=("Segoe UI", 8, "bold"), bg="#181826", fg="#ff5252").grid(row=4, column=0, sticky="w", padx=10, pady=(4, 2))
+        self.end_date_entry = tk.Entry(grid_f, bg="#242436", fg="white", insertbackground="white", font=("Segoe UI", 9), bd=0, width=14)
+        self.end_date_entry.insert(0, cur_end_date)
+        self.end_date_entry.grid(row=5, column=0, padx=10, pady=(0, 6), sticky="w")
+
+        tk.Label(grid_f, text="Closes Time (HH:MM):", font=("Segoe UI", 8, "bold"), bg="#181826", fg="#ff5252").grid(row=4, column=1, sticky="w", padx=10, pady=(4, 2))
+        self.end_time_entry = tk.Entry(grid_f, bg="#242436", fg="#ff5252", insertbackground="white", font=("Segoe UI", 9, "bold"), bd=0, width=12)
+        self.end_time_entry.insert(0, cur_end_time)
+        self.end_time_entry.grid(row=5, column=1, padx=10, pady=(0, 6), sticky="w")
+
+        # Quick Duration Buttons for adjusting times
+        dur_f = tk.Frame(form, bg="#12121c")
+        dur_f.pack(fill=tk.X, pady=(0, 6))
+        tk.Label(dur_f, text="Quick Adjust:", font=("Segoe UI", 8), bg="#12121c", fg="#8888aa").pack(side=tk.LEFT, padx=(2, 6))
+        for hours in (1, 2, 3, 4):
+            btn = tk.Button(
+                dur_f,
+                text=f"+{hours}h",
+                font=("Segoe UI", 8),
+                bg="#202030",
+                fg="#00bcd4",
+                activebackground="#00bcd4",
+                activeforeground="black",
+                relief="flat",
+                padx=6,
+                pady=1,
+                command=lambda h=hours: self.apply_quick_duration(h)
+            )
+            btn.pack(side=tk.LEFT, padx=2)
+
+        # Apply to all matching summary checkbox
+        self.apply_all_var = tk.BooleanVar(value=True)
+        cb_all = tk.Checkbutton(
+            form,
+            text="Also update/link all companion tasks for this exam",
+            variable=self.apply_all_var,
+            font=("Segoe UI", 8),
+            bg="#12121c",
+            fg="#9e9ea8",
+            selectcolor="#000000",
+            activebackground="#12121c",
+            activeforeground="#ffffff"
+        )
+        cb_all.pack(anchor="w", pady=(0, 6))
+
+        # Bottom Button Bar
+        btn_bar = tk.Frame(self, bg="#0e0e16")
+        btn_bar.pack(fill=tk.X, side=tk.BOTTOM, padx=16, pady=12)
+
+        tk.Button(
+            btn_bar,
+            text="💾 Save Exam Schedule",
+            font=("Segoe UI", 9, "bold"),
+            bg="#ffd700",
+            fg="#000000",
+            relief="flat",
+            padx=12,
+            pady=4,
+            command=self.save
+        ).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(
+            btn_bar,
+            text="Unmark (Regular)",
+            font=("Segoe UI", 8),
+            bg="#2c2c3a",
+            fg="#cccccc",
+            relief="flat",
+            padx=8,
+            pady=4,
+            command=self.unmark
+        ).pack(side=tk.LEFT, padx=3)
+
+        tk.Button(
+            btn_bar,
+            text="Cancel",
+            font=("Segoe UI", 8),
+            bg="#1c1c24",
+            fg="#888888",
+            relief="flat",
+            padx=8,
+            pady=4,
+            command=self.destroy
+        ).pack(side=tk.RIGHT, padx=3)
+
+    def apply_quick_duration(self, hours):
+        st = self.start_time_entry.get().strip()
+        parsed = parse_schedule_time(st)
+        if parsed:
+            h, m = parsed
+            end_h = (h + hours) % 24
+            self.end_time_entry.delete(0, tk.END)
+            self.end_time_entry.insert(0, f"{end_h:02d}:{m:02d}")
+
+    def save(self):
+        is_ex = self.is_exam_var.get()
+        s_date = self.start_date_entry.get().strip()
+        s_time = self.start_time_entry.get().strip()
+        t_date = self.target_date_entry.get().strip()
+        t_time = self.target_time_entry.get().strip()
+        e_date = self.end_date_entry.get().strip()
+        e_time = self.end_time_entry.get().strip()
+
+        # Validate dates if provided
+        for d_val, lbl in ((s_date, "Opens Date"), (t_date, "Target Date"), (e_date, "Closes Date")):
+            if d_val:
+                try:
+                    datetime.strptime(d_val, "%Y-%m-%d")
+                except ValueError:
+                    messagebox.showerror("Invalid Date", f"{lbl} must be in YYYY-MM-DD format (e.g. 2026-10-15).", parent=self)
+                    return
+
+        # Validate times if provided
+        for t_val, lbl in ((s_time, "Opens Time"), (t_time, "Target Time"), (e_time, "Closes Time")):
+            if t_val and not parse_schedule_time(t_val):
+                messagebox.showerror("Invalid Time", f"{lbl} must be in HH:MM format (e.g. 09:00).", parent=self)
+                return
+
+        # Canonicalize HH:MM
+        if s_time:
+            sh, sm = parse_schedule_time(s_time)
+            s_time = f"{sh:02d}:{sm:02d}"
+        if t_time:
+            th, tm = parse_schedule_time(t_time)
+            t_time = f"{th:02d}:{tm:02d}"
+        if e_time:
+            eh, em = parse_schedule_time(e_time)
+            e_time = f"{eh:02d}:{em:02d}"
+
+        self.on_save_callback(
+            is_exam=is_ex,
+            start_date=s_date,
+            start_time=s_time,
+            target_date=t_date,
+            target_time=t_time,
+            end_date=e_date,
+            end_time=e_time,
+            apply_to_all=self.apply_all_var.get()
+        )
+        self.destroy()
+
+    def unmark(self):
+        self.on_save_callback(
+            is_exam=False,
+            start_date=self.item.get("start_date", ""),
+            start_time="",
+            target_date="",
+            target_time="",
+            end_date=self.item.get("end_date", ""),
+            end_time="",
+            apply_to_all=self.apply_all_var.get()
+        )
+        self.destroy()
 
 
 # --- Settings, Analytics, Deadlines & Dynamic Tags Modal ---
@@ -1645,6 +2084,7 @@ class SettingsWindow(tk.Toplevel):
         sb.pack(side=tk.RIGHT, fill=tk.Y)
         self.deadlines_box.config(yscrollcommand=sb.set)
         self.deadlines_box.bind("<<ListboxSelect>>", self.on_deadline_selected)
+        self.deadlines_box.bind("<Double-Button-1>", lambda e: self.open_exam_details_dialog())
 
         self.selected_deadline_idx = None
         self.refresh_deadlines_listbox()
@@ -1673,6 +2113,7 @@ class SettingsWindow(tk.Toplevel):
         dl_action_bar.pack(fill=tk.X, padx=10, pady=(4, 2))
 
         tk.Button(dl_action_bar, text="✓ Toggle Done", font=("Segoe UI", 8, "bold"), bg="#4CAF50", fg="white", relief="flat", command=self.toggle_deadline_complete).pack(side=tk.LEFT, padx=2)
+        tk.Button(dl_action_bar, text="🎓 Exam Details", font=("Segoe UI", 8, "bold"), bg="#ff9800", fg="black", relief="flat", command=self.open_exam_details_dialog).pack(side=tk.LEFT, padx=2)
         tk.Button(dl_action_bar, text="🗑️ Remove", font=("Segoe UI", 8, "bold"), bg="#f44336", fg="white", relief="flat", command=self.remove_selected_deadline).pack(side=tk.LEFT, padx=2)
         tk.Button(dl_action_bar, text="🔔 Preview Alert", font=("Segoe UI", 8), bg="#1f1f1f", fg="#ff9800", relief="flat", command=self.preview_upcoming_alert).pack(side=tk.RIGHT, padx=2)
 
@@ -1680,8 +2121,9 @@ class SettingsWindow(tk.Toplevel):
         dl_batch_bar = tk.Frame(frame, bg="#121212")
         dl_batch_bar.pack(fill=tk.X, padx=10, pady=(2, 4))
         tk.Label(dl_batch_bar, text="Same Name:", font=("Segoe UI", 8, "bold"), bg="#121212", fg="#888888").pack(side=tk.LEFT, padx=(2, 4))
-        tk.Button(dl_batch_bar, text="✓ Mark All Same Done", font=("Segoe UI", 8, "bold"), bg="#2e7d32", fg="white", relief="flat", command=self.mark_all_same_completed).pack(side=tk.LEFT, padx=2)
-        tk.Button(dl_batch_bar, text="📅 Mark All as Attendance", font=("Segoe UI", 8, "bold"), bg="#3949ab", fg="white", relief="flat", command=self.mark_all_same_attendance).pack(side=tk.LEFT, padx=2)
+        tk.Button(dl_batch_bar, text="✓ Mark Done", font=("Segoe UI", 8, "bold"), bg="#2e7d32", fg="white", relief="flat", command=self.mark_all_same_completed).pack(side=tk.LEFT, padx=2)
+        tk.Button(dl_batch_bar, text="🎓 Toggle Exam", font=("Segoe UI", 8, "bold"), bg="#e65100", fg="white", relief="flat", command=self.mark_all_same_exam).pack(side=tk.LEFT, padx=2)
+        tk.Button(dl_batch_bar, text="📅 Attendance", font=("Segoe UI", 8, "bold"), bg="#3949ab", fg="white", relief="flat", command=self.mark_all_same_attendance).pack(side=tk.LEFT, padx=2)
 
 
     def get_displayed_deadlines(self):
@@ -1781,24 +2223,67 @@ class SettingsWindow(tk.Toplevel):
     def refresh_deadlines_listbox(self):
         self.deadlines_box.delete(0, tk.END)
         today = datetime.now().date()
-        for d in self.get_displayed_deadlines():
+        for idx, d in enumerate(self.get_displayed_deadlines()):
             due_d = datetime.strptime(d["due"], "%Y-%m-%d").date()
             diff = (due_d - today).days
-            
-            if d.get("completed", False):
+            is_exam = d.get("is_exam", False)
+
+            s_low = d.get("summary", "").lower()
+            if is_exam:
+                info = get_exam_timeline(d, self.app.deadlines)
+                if d.get("completed", False):
+                    status = "[✓ EXAM COMPLETED]"
+                elif info.get("status_label"):
+                    status = f"[{info['status_label']}]"
+                elif diff < 0:
+                    status = f"[🎓 EXAM OVERDUE {abs(diff)}d]"
+                elif diff == 0:
+                    status = f"[🎓 EXAM TODAY]"
+                else:
+                    status = f"[🎓 EXAM in {diff}d]"
+
+                if any(w in s_low for w in ('avautuu', 'opens', 'alkaa')):
+                    exam_marker = "🟢 [OPENS] "
+                elif any(w in s_low for w in ('pitäisi olla', 'pitaisi olla', 'done by', 'target')):
+                    exam_marker = "🎯 [TARGET] "
+                elif any(w in s_low for w in ('sulkeutuu', 'closes', 'päättyy')):
+                    exam_marker = "🚨 [CLOSES] "
+                else:
+                    exam_marker = "🎓 [EXAM] "
+            elif d.get("completed", False):
                 status = "[✓ COMPLETED]"
+                exam_marker = ""
             elif d.get("is_attendance", False):
                 status = f"[📅 ATTENDANCE • {diff}d]"
+                exam_marker = ""
             elif diff < 0: 
                 status = f"[Overdue {abs(diff)}d]"
+                exam_marker = ""
             elif diff == 0: 
                 status = "[DUE TODAY]"
+                exam_marker = ""
             elif diff == 1: 
                 status = "[Tomorrow]"
+                exam_marker = ""
             else: 
                 status = f"[{diff} days left]"
+                exam_marker = ""
+            
             tag_badge = f"[{d['tag']}] " if d.get("tag") else "[No Tag] "
-            self.deadlines_box.insert(tk.END, f"{d['due']} - {tag_badge}{d['summary']} {status}")
+            self.deadlines_box.insert(tk.END, f"{d['due']} - {exam_marker}{tag_badge}{d['summary']} {status}")
+
+            if d.get("completed", False):
+                self.deadlines_box.itemconfig(idx, fg="#666666")
+            elif is_exam:
+                self.deadlines_box.itemconfig(idx, fg="#ffd700")
+            elif d.get("is_attendance", False):
+                self.deadlines_box.itemconfig(idx, fg="#8899aa")
+            elif diff <= 0:
+                self.deadlines_box.itemconfig(idx, fg="#ff5252")
+            elif diff == 1:
+                self.deadlines_box.itemconfig(idx, fg="#ff9800")
+            else:
+                self.deadlines_box.itemconfig(idx, fg="#e0e0e0")
 
     def toggle_deadline_complete(self):
         sel = self.deadlines_box.curselection()
@@ -1826,6 +2311,48 @@ class SettingsWindow(tk.Toplevel):
                 if hasattr(self.app, 'update_imminent_deadline_banner'):
                     self.app.update_imminent_deadline_banner()
 
+    def open_exam_details_dialog(self):
+        sel = self.deadlines_box.curselection()
+        idx = sel[0] if sel else getattr(self, 'selected_deadline_idx', None)
+        if idx is None:
+            messagebox.showwarning("Select Deadline", "Please select a deadline from the list first.")
+            return
+
+        displayed = self.get_displayed_deadlines()
+        if 0 <= idx < len(displayed):
+            target = displayed[idx]
+
+            def on_save(is_exam, start_date, start_time, target_date, target_time, end_date, end_time, apply_to_all):
+                targets = [target]
+                if apply_to_all:
+                    t_name = target.get("summary", "").strip().lower()
+                    base_name = get_exam_base_title(t_name)
+                    targets = [d for d in self.app.deadlines if d.get("summary", "").strip().lower() == t_name or (base_name and len(base_name) > 4 and get_exam_base_title(d.get("summary", "").strip().lower()) == base_name)]
+
+                for item in targets:
+                    item["is_exam"] = is_exam
+                    if is_exam:
+                        if start_date: item["start_date"] = start_date
+                        if start_time: item["start_time"] = start_time
+                        if target_date: item["target_date"] = target_date
+                        if target_time: item["target_time"] = target_time
+                        if end_date: item["end_date"] = end_date
+                        if end_time: item["end_time"] = end_time
+                    else:
+                        item.pop("start_time", None)
+                        item.pop("target_time", None)
+                        item.pop("end_time", None)
+                        item.pop("target_date", None)
+
+                self.app.save_data()
+                self.refresh_deadlines_listbox()
+                if hasattr(self.app, 'update_imminent_deadline_banner'):
+                    self.app.update_imminent_deadline_banner()
+                status_txt = "marked as Exam 🎓" if is_exam else "set as regular assignment 📝"
+                messagebox.showinfo("Exam Updated", f"Task successfully {status_txt}!")
+
+            ExamDetailsModal(self, target, on_save)
+
     def mark_all_same_completed(self):
         sel = self.deadlines_box.curselection()
         idx = sel[0] if sel else getattr(self, 'selected_deadline_idx', None)
@@ -1849,6 +2376,33 @@ class SettingsWindow(tk.Toplevel):
             if hasattr(self.app, 'update_imminent_deadline_banner'):
                 self.app.update_imminent_deadline_banner()
             messagebox.showinfo("Updated! ✓", f"Marked all {len(matching)} '{target_name}' items as {state_label}!")
+
+    def mark_all_same_exam(self):
+        sel = self.deadlines_box.curselection()
+        idx = sel[0] if sel else getattr(self, 'selected_deadline_idx', None)
+        if idx is None:
+            messagebox.showwarning("Select Item", "Please select a task from the list first.")
+            return
+        displayed = self.get_displayed_deadlines()
+        if 0 <= idx < len(displayed):
+            target = displayed[idx]
+            target_name = target.get("summary", "").strip()
+            matching = [d for d in self.app.deadlines if d.get("summary", "").strip().lower() == target_name.lower()]
+            if not matching:
+                return
+            all_exam = all(d.get("is_exam", False) for d in matching)
+            new_state = not all_exam
+            for d in matching:
+                d["is_exam"] = new_state
+                if not new_state:
+                    d.pop("start_time", None)
+                    d.pop("end_time", None)
+            self.app.save_data()
+            self.refresh_deadlines_listbox()
+            if hasattr(self.app, 'update_imminent_deadline_banner'):
+                self.app.update_imminent_deadline_banner()
+            action_str = "marked as Exam 🎓" if new_state else "unmarked as Exam (regular assignment) 📝"
+            messagebox.showinfo("Exam Status Updated! 🎓", f"All {len(matching)} '{target_name}' items {action_str}!")
 
     def mark_all_same_attendance(self):
         sel = self.deadlines_box.curselection()
@@ -2114,10 +2668,10 @@ class FocusApp:
         self.root = root
         self.is_startup_mode = is_startup_mode
         self.root.title("Focus Timer & Study Studio")
-        self.root.geometry("450x800")
-        self.root.configure(bg="#000000")
-        self.root.minsize(450, 800)
-        self.root.maxsize(450, 800)
+        self.root.geometry("480x830")
+        self.root.configure(bg="#0a0a10")
+        self.root.minsize(480, 830)
+        self.root.maxsize(480, 830)
 
         # Ensure smooth Windows 11 taskbar restore and window layering
         self.root.bind("<Map>", self.on_window_map)
@@ -2172,6 +2726,23 @@ class FocusApp:
         self.custom_tags = data["custom_tags"]
         self.tag_targets = data["tag_targets"]
         self.deadlines = data["deadlines"]
+        # Auto-detect exams and phase milestones for deadlines
+        exam_keywords = ('tentti', 'exam', 'koe', 'uusintatentti', 'välikoe', 'loppukoe', 'midterm', 'final')
+        for d in self.deadlines:
+            s_low = d.get("summary", "").lower()
+            if any(kw in s_low for kw in exam_keywords):
+                d["is_exam"] = True
+                if not d.get("exam_phase"):
+                    if any(w in s_low for w in ('avautuu', 'opens', 'alkaa')):
+                        d['exam_phase'] = 'open'
+                    elif any(w in s_low for w in ('pitäisi olla', 'pitaisi olla', 'done by', 'target', 'suositus')):
+                        d['exam_phase'] = 'target'
+                    elif any(w in s_low for w in ('sulkeutuu', 'closes', 'päättyy', 'paattyy', 'dl', 'deadline')):
+                        d['exam_phase'] = 'close'
+                t_match = re.search(r'klo\s*(\d{1,2})[.:](\d{2})', d.get("summary", ""), re.IGNORECASE)
+                if t_match and not d.get("end_time"):
+                    hh, mm = int(t_match.group(1)), int(t_match.group(2))
+                    d["end_time"] = f"{hh:02d}:{mm:02d}"
         self.startup_check_enabled = data["startup_check_enabled"]
         self.last_deadline_alert_date = data.get("last_deadline_alert_date", "")
         self.ical_subscription_url = data.get("ical_subscription_url", "")
@@ -2626,140 +3197,150 @@ del "%~f0"
 
     def build_ui(self):
         if not is_admin():
-            self.admin_banner = tk.Frame(self.root, bg="#ff9800", pady=3)
+            self.admin_banner = tk.Frame(self.root, bg="#291500", highlightbackground="#d97706", highlightthickness=1, pady=3)
             self.admin_banner.pack(fill=tk.X, side=tk.TOP)
-            tk.Label(self.admin_banner, text="⚠️ Non-Admin Mode (Websites won't be blocked)", font=("Segoe UI", 8, "bold"), bg="#ff9800", fg="#000000").pack(side=tk.LEFT, padx=5)
-            tk.Button(self.admin_banner, text="Relaunch as Admin", font=("Segoe UI", 8, "bold"), bg="#212121", fg="#ffffff", relief="flat", command=relaunch_as_admin).pack(side=tk.RIGHT, padx=5)
+            tk.Label(self.admin_banner, text="⚠️ Non-Admin Mode (Blocking Disabled)", font=("Segoe UI", 8, "bold"), bg="#291500", fg="#fbbf24").pack(side=tk.LEFT, padx=10)
+            tk.Button(self.admin_banner, text="Relaunch Admin", font=("Segoe UI", 7, "bold"), bg="#d97706", fg="black", relief="flat", padx=8, pady=1, command=relaunch_as_admin).pack(side=tk.RIGHT, padx=10)
 
-        self.top_card = tk.Frame(self.root, bg="#121212", bd=0)
-        self.top_card.pack(fill=tk.X, padx=15, pady=(10, 4))
+        self.top_card = tk.Frame(self.root, bg="#11111a", highlightbackground="#222233", highlightthickness=1)
+        self.top_card.pack(fill=tk.X, padx=14, pady=(10, 4))
 
-        self.title_label = tk.Label(self.top_card, text="🎯 Focus Studio", font=("Segoe UI", 13, "bold"), bg="#121212", fg="#ffffff")
-        self.title_label.pack(side=tk.LEFT, padx=10, pady=6)
+        self.title_label = tk.Label(self.top_card, text="🎯 Focus Studio", font=("Segoe UI", 12, "bold"), bg="#11111a", fg="#ffffff")
+        self.title_label.pack(side=tk.LEFT, padx=(10, 6), pady=6)
 
         # Streak Badge with Multiplier
         streak_mult = self.get_streak_multiplier()
         streak_text = f"🔥 {self.streak_count}d Streak" + (f" ({streak_mult}x)" if streak_mult > 1.0 else "")
-        self.streak_label = tk.Label(self.top_card, text=streak_text, font=("Segoe UI", 8, "bold"), bg="#1f1f1f", fg="#ff9800", padx=6, pady=2)
-        self.streak_label.pack(side=tk.LEFT, padx=4)
+        self.streak_label = tk.Label(self.top_card, text=streak_text, font=("Segoe UI", 8, "bold"), bg="#2a1a08", fg="#f59e0b", padx=6, pady=2)
+        self.streak_label.pack(side=tk.LEFT, padx=2)
 
-        self.settings_btn = tk.Button(self.top_card, text="⚙ Stats & Settings", font=("Segoe UI", 8, "bold"), bg="#1f1f1f", fg="#ffffff", activebackground="#333333", activeforeground="white", relief="flat", padx=8, command=self.open_settings)
-        self.settings_btn.pack(side=tk.RIGHT, padx=8, pady=6)
+        self.settings_btn = tk.Button(self.top_card, text="⚙ Settings", font=("Segoe UI", 8, "bold"), bg="#1f1f2e", fg="#e2e8f0", activebackground="#2d2d42", activeforeground="white", relief="flat", padx=8, pady=3, command=self.open_settings)
+        self.settings_btn.pack(side=tk.RIGHT, padx=(4, 8), pady=5)
 
-        self.mobile_sync_btn = tk.Button(self.top_card, text="📱 Phone Sync", font=("Segoe UI", 8, "bold"), bg="#1f1f1f", fg="#818cf8", activebackground="#333333", activeforeground="#a5b4fc", relief="flat", padx=8, command=self.open_mobile_sync_dialog)
-        self.mobile_sync_btn.pack(side=tk.RIGHT, padx=(0, 4), pady=6)
-
+        self.mobile_sync_btn = tk.Button(self.top_card, text="📱 Sync", font=("Segoe UI", 8, "bold"), bg="#1e1b38", fg="#a5b4fc", activebackground="#2a2550", activeforeground="#c7d2fe", relief="flat", padx=8, pady=3, command=self.open_mobile_sync_dialog)
+        self.mobile_sync_btn.pack(side=tk.RIGHT, padx=(0, 4), pady=5)
 
         # Next Imminent Deadline & Recommendation Banner
-        self.deadline_banner = tk.Frame(self.root, bg="#14141e", highlightbackground="#ff9800", highlightthickness=1)
-        self.deadline_banner.pack(fill=tk.X, padx=15, pady=(2, 4))
+        self.deadline_banner = tk.Frame(self.root, bg="#151226", highlightbackground="#4c2c7a", highlightthickness=1)
+        self.deadline_banner.pack(fill=tk.X, padx=14, pady=(2, 4))
 
-        self.dl_banner_top = tk.Frame(self.deadline_banner, bg="#14141e")
-        self.dl_banner_top.pack(fill=tk.X, padx=8, pady=(4, 1))
+        self.dl_banner_top = tk.Frame(self.deadline_banner, bg="#151226")
+        self.dl_banner_top.pack(fill=tk.X, padx=10, pady=(5, 1))
 
-        self.dl_urgency_lbl = tk.Label(self.dl_banner_top, text="", font=("Segoe UI", 8, "bold"), bg="#14141e", fg="#ff9800", anchor="w")
-        self.dl_urgency_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        self.dl_urgency_lbl = tk.Label(self.dl_banner_top, text="", font=("Segoe UI", 8, "bold"), bg="#151226", fg="#f59e0b", anchor="w")
+        self.dl_urgency_lbl.pack(fill=tk.X, expand=True)
 
-        self.dl_banner_bot = tk.Frame(self.deadline_banner, bg="#14141e")
-        self.dl_banner_bot.pack(fill=tk.X, padx=8, pady=(1, 4))
+        self.dl_timeline_lbl = tk.Label(self.dl_banner_top, text="", font=("Segoe UI", 7, "bold"), bg="#151226", fg="#c084fc", anchor="w")
+        self.dl_timeline_lbl.pack(fill=tk.X, expand=True, pady=(1, 0))
 
-        self.dl_rec_lbl = tk.Label(self.dl_banner_bot, text="", font=("Segoe UI", 7, "bold"), bg="#14141e", fg="#cccccc", anchor="w")
+        self.dl_banner_bot = tk.Frame(self.deadline_banner, bg="#151226")
+        self.dl_banner_bot.pack(fill=tk.X, padx=10, pady=(3, 5))
+
+        self.dl_rec_lbl = tk.Label(self.dl_banner_bot, text="", font=("Segoe UI", 7, "bold"), bg="#151226", fg="#94a3b8", anchor="w")
         self.dl_rec_lbl.pack(side=tk.LEFT, fill=tk.X, expand=True)
 
-        self.dl_banner_combo = ttk.Combobox(self.dl_banner_bot, values=["-- Choose Course --"] + self.custom_tags, width=15, state="readonly", font=("Segoe UI", 7, "bold"))
-        self.dl_banner_combo.pack(side=tk.LEFT, padx=3)
+        self.dl_banner_combo = ttk.Combobox(self.dl_banner_bot, values=["-- Choose Course --"] + self.custom_tags, width=14, state="readonly", font=("Segoe UI", 7, "bold"))
+        self.dl_banner_combo.pack(side=tk.LEFT, padx=4)
         self.dl_banner_combo.bind("<<ComboboxSelected>>", self.on_banner_tag_selected)
 
-        self.dl_action_btn = tk.Button(self.dl_banner_bot, text="🎯 Target", font=("Segoe UI", 7, "bold"), bg="#00bcd4", fg="black", relief="flat", padx=6, pady=1)
+        self.dl_action_btn = tk.Button(self.dl_banner_bot, text="🎯 Target", font=("Segoe UI", 7, "bold"), bg="#0284c7", fg="white", relief="flat", padx=7, pady=1)
         self.dl_action_btn.pack(side=tk.RIGHT)
 
         # Mode, Custom Subject Tag Bar & Pre-Schedule Button
         self.mode_frame = tk.Frame(self.root, bg="#000000")
-        self.mode_frame.pack(pady=2)
+        self.mode_frame.pack(pady=(2, 2))
 
-        self.custom_mode_btn = tk.Button(self.mode_frame, text="⏱️ Custom", font=("Segoe UI", 8, "bold"), bg="#00bcd4", fg="black", relief="flat", padx=6, command=lambda: self.switch_app_mode("custom"))
-        self.custom_mode_btn.pack(side=tk.LEFT, padx=2)
+        self.custom_mode_btn = tk.Button(self.mode_frame, text="⏱️ Custom", font=("Segoe UI", 8, "bold"), bg="#0284c7", fg="white", relief="flat", padx=8, pady=2, command=lambda: self.switch_app_mode("custom"))
+        self.custom_mode_btn.pack(side=tk.LEFT, padx=3)
 
-        self.pomo_mode_btn = tk.Button(self.mode_frame, text="🍅 Pomodoro", font=("Segoe UI", 8, "bold"), bg="#1f1f1f", fg="#ffffff", relief="flat", padx=6, command=lambda: self.switch_app_mode("pomodoro"))
-        self.pomo_mode_btn.pack(side=tk.LEFT, padx=2)
+        self.pomo_mode_btn = tk.Button(self.mode_frame, text="🍅 Pomodoro", font=("Segoe UI", 8, "bold"), bg="#1a1a24", fg="#94a3b8", relief="flat", padx=8, pady=2, command=lambda: self.switch_app_mode("pomodoro"))
+        self.pomo_mode_btn.pack(side=tk.LEFT, padx=3)
 
-        tk.Label(self.mode_frame, text="Tag:", font=("Segoe UI", 8, "bold"), bg="#000000", fg="#888888").pack(side=tk.LEFT, padx=(6, 2))
+        tk.Label(self.mode_frame, text="Tag:", font=("Segoe UI", 8, "bold"), bg="#000000", fg="#64748b").pack(side=tk.LEFT, padx=(8, 3))
         self.subj_var = tk.StringVar(value=self.current_subject)
         self.subj_combo = ttk.Combobox(self.mode_frame, textvariable=self.subj_var, values=self.custom_tags, width=11, state="readonly", font=("Segoe UI", 8, "bold"))
         self.subj_combo.pack(side=tk.LEFT, padx=2)
         self.subj_combo.bind("<<ComboboxSelected>>", self.on_subject_change)
 
-        self.sched_btn = tk.Button(self.mode_frame, text="📅 Pre-Schedule", font=("Segoe UI", 8, "bold"), bg="#1f1f1f", fg="#ff9800", relief="flat", padx=6, command=self.open_pre_designate_dialog)
-        self.sched_btn.pack(side=tk.LEFT, padx=3)
+        self.sched_btn = tk.Button(self.mode_frame, text="📅 Pre-Schedule", font=("Segoe UI", 8, "bold"), bg="#1c1926", fg="#f59e0b", relief="flat", padx=7, pady=2, command=self.open_pre_designate_dialog)
+        self.sched_btn.pack(side=tk.LEFT, padx=(5, 0))
 
-        self.stats_label = tk.Label(self.root, text=self.format_total_time(), font=("Segoe UI", 8, "bold"), bg="#000000", fg="#888888")
-        self.stats_label.pack(pady=(2, 2))
+        self.stats_label = tk.Label(self.root, text=self.format_total_time(), font=("Segoe UI", 8, "bold"), bg="#000000", fg="#64748b")
+        self.stats_label.pack(pady=(1, 1))
 
         self.controls_frame = tk.Frame(self.root, bg="#000000")
-        self.controls_frame.pack(pady=2)
+        self.controls_frame.pack(pady=(1, 1))
 
         preset_frame = tk.Frame(self.controls_frame, bg="#000000")
-        preset_frame.pack(pady=2)
+        preset_frame.pack(pady=(1, 1))
 
         for mins in [15, 25, 45, 60, 90]:
-            btn = tk.Button(preset_frame, text=f"{mins}m", font=("Segoe UI", 8, "bold"), bg="#121212", fg="#00bcd4", activebackground="#00bcd4", activeforeground="black", relief="flat", width=4, command=lambda m=mins: self.set_preset_minutes(m))
+            btn = tk.Button(preset_frame, text=f"{mins}m", font=("Segoe UI", 8, "bold"), bg="#14141e", fg="#38bdf8", activebackground="#0284c7", activeforeground="white", relief="flat", width=4, command=lambda m=mins: self.set_preset_minutes(m))
             btn.pack(side=tk.LEFT, padx=2)
 
-        tk.Button(preset_frame, text="⚡ 5m", font=("Segoe UI", 8, "bold"), bg="#1f142b", fg="#e040fb", activebackground="#e040fb", activeforeground="black", relief="flat", width=4, command=self.start_5min_micro_commitment).pack(side=tk.LEFT, padx=2)
+        tk.Button(preset_frame, text="⚡ 5m", font=("Segoe UI", 8, "bold"), bg="#23132e", fg="#c084fc", activebackground="#a855f7", activeforeground="white", relief="flat", width=4, command=self.start_5min_micro_commitment).pack(side=tk.LEFT, padx=2)
 
         direct_frame = tk.Frame(self.controls_frame, bg="#000000")
-        direct_frame.pack(pady=2)
+        direct_frame.pack(pady=(1, 1))
 
-        tk.Label(direct_frame, text="Timer (mins):", font=("Segoe UI", 8, "bold"), bg="#000000", fg="#cccccc").pack(side=tk.LEFT, padx=4)
-        self.minute_entry = tk.Entry(direct_frame, width=5, font=("Segoe UI", 8, "bold"), bg="#121212", fg="#ffffff", insertbackground="white", justify="center", bd=0)
-        self.minute_entry.pack(side=tk.LEFT, padx=2)
+        tk.Label(direct_frame, text="Timer (mins):", font=("Segoe UI", 8, "bold"), bg="#000000", fg="#94a3b8").pack(side=tk.LEFT, padx=4)
+        self.minute_entry = tk.Entry(direct_frame, width=5, font=("Segoe UI", 8, "bold"), bg="#14141e", fg="#ffffff", insertbackground="white", justify="center", bd=0, highlightthickness=1, highlightbackground="#2e2e42")
+        self.minute_entry.pack(side=tk.LEFT, padx=3)
         self.minute_entry.bind("<KeyRelease>", self.on_minute_entry_change)
 
         self.warmup_var = tk.BooleanVar(value=False)
-        self.warmup_cb = tk.Checkbutton(self.controls_frame, text="🧘 1-Min Mindfulness Warm-Up", variable=self.warmup_var, font=("Segoe UI", 8, "bold"), bg="#000000", fg="#ab47bc", selectcolor="#121212", activebackground="#000000", activeforeground="#ab47bc")
-        self.warmup_cb.pack(pady=2)
+        self.warmup_cb = tk.Checkbutton(direct_frame, text="🧘 1-Min Warm-Up", variable=self.warmup_var, font=("Segoe UI", 8, "bold"), bg="#000000", fg="#a855f7", selectcolor="#14141e", activebackground="#000000", activeforeground="#a855f7")
+        self.warmup_cb.pack(side=tk.LEFT, padx=8)
 
         self.canvas = tk.Canvas(self.root, width=170, height=170, bg="#000000", highlightthickness=0, cursor="hand2")
-        self.canvas.pack(pady=2)
+        self.canvas.pack(pady=(2, 2))
         self.canvas.bind("<ButtonPress-1>", self.start_drag)
         self.canvas.bind("<B1-Motion>", self.on_drag)
 
-        self.goals_card = tk.Frame(self.root, bg="#121212", bd=0)
-        self.goals_card.pack(fill=tk.X, padx=15, pady=3)
+        self.goals_card = tk.Frame(self.root, bg="#11111a", highlightbackground="#222233", highlightthickness=1)
+        self.goals_card.pack(fill=tk.X, padx=14, pady=(2, 3))
 
-        tk.Label(self.goals_card, text="📋 Session Micro-Goals", font=("Segoe UI", 8, "bold"), bg="#121212", fg="#00bcd4").pack(anchor="w", padx=10, pady=(4, 2))
+        g_top = tk.Frame(self.goals_card, bg="#11111a")
+        g_top.pack(fill=tk.X, padx=8, pady=(4, 2))
+        tk.Label(g_top, text="📋 Session Micro-Goals", font=("Segoe UI", 8, "bold"), bg="#11111a", fg="#38bdf8").pack(side=tk.LEFT)
 
-        g_input_frame = tk.Frame(self.goals_card, bg="#121212")
-        g_input_frame.pack(fill=tk.X, padx=10, pady=2)
+        g_input_frame = tk.Frame(self.goals_card, bg="#11111a")
+        g_input_frame.pack(fill=tk.X, padx=8, pady=(0, 3))
 
-        self.goal_entry = tk.Entry(g_input_frame, bg="#1f1f1f", fg="white", insertbackground="white", font=("Segoe UI", 8), bd=0)
+        self.goal_entry = tk.Entry(g_input_frame, bg="#1a1a26", fg="white", insertbackground="white", font=("Segoe UI", 8), bd=0, highlightthickness=1, highlightbackground="#2a2a3c")
         self.goal_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 4))
         self.goal_entry.bind("<Return>", lambda e: self.add_micro_goal())
 
-        tk.Button(g_input_frame, text="+ Goal", font=("Segoe UI", 7, "bold"), bg="#00bcd4", fg="black", relief="flat", command=self.add_micro_goal).pack(side=tk.RIGHT)
+        tk.Button(g_input_frame, text="+ Goal", font=("Segoe UI", 7, "bold"), bg="#0284c7", fg="white", relief="flat", padx=6, command=self.add_micro_goal).pack(side=tk.RIGHT)
 
-        self.goals_list_frame = tk.Frame(self.goals_card, bg="#121212")
-        self.goals_list_frame.pack(fill=tk.X, padx=10, pady=(2, 4))
+        self.goals_list_frame = tk.Frame(self.goals_card, bg="#11111a")
+        self.goals_list_frame.pack(fill=tk.X, padx=8, pady=(0, 3))
 
-        self.audio_card = tk.Frame(self.root, bg="#121212", bd=0)
-        self.audio_card.pack(fill=tk.X, padx=15, pady=3)
+        self.audio_card = tk.Frame(self.root, bg="#11111a", highlightbackground="#222233", highlightthickness=1)
+        self.audio_card.pack(fill=tk.X, padx=14, pady=(2, 3))
 
         # Active Boost Badge Label
-        self.boost_badge_lbl = tk.Label(self.audio_card, text="", font=("Segoe UI", 8, "bold"), bg="#121212", fg="#ff9800")
+        self.boost_badge_lbl = tk.Label(self.audio_card, text="", font=("Segoe UI", 8, "bold"), bg="#11111a", fg="#f59e0b")
         self.boost_badge_lbl.pack(pady=(2, 0))
 
-        launch_row = tk.Frame(self.audio_card, bg="#121212")
-        launch_row.pack(fill=tk.X, padx=10, pady=4)
+        launch_row = tk.Frame(self.audio_card, bg="#11111a")
+        launch_row.pack(fill=tk.X, padx=8, pady=(2, 3))
 
-        self.yt_btn = tk.Button(launch_row, text="▶️ YouTube Rain", font=("Segoe UI", 8, "bold"), bg="#cc181e", fg="white", activebackground="#e62117", activeforeground="white", relief="flat", command=self.open_youtube_stream)
-        self.yt_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
+        self.yt_btn = tk.Button(launch_row, text="▶️ Rain Stream", font=("Segoe UI", 7, "bold"), bg="#dc2626", fg="white", activebackground="#b91c1c", activeforeground="white", relief="flat", command=self.open_youtube_stream)
+        self.yt_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
 
-        self.spot_btn = tk.Button(launch_row, text="🎧 Spotify App", font=("Segoe UI", 8, "bold"), bg="#1db954", fg="black", activebackground="#1ed760", activeforeground="black", relief="flat", command=self.launch_spotify)
-        self.spot_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
+        self.spot_btn = tk.Button(launch_row, text="🎧 Spotify", font=("Segoe UI", 7, "bold"), bg="#16a34a", fg="white", activebackground="#15803d", activeforeground="white", relief="flat", command=self.launch_spotify)
+        self.spot_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+
+        self.yt_bypass_btn = tk.Button(launch_row, text="🔓 Unblock YT", font=("Segoe UI", 7, "bold"), bg="#1f1f2e", fg="#f59e0b", relief="flat", command=self.toggle_youtube_bypass)
+        self.yt_bypass_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
+
+        self.hall_pass_btn = tk.Button(launch_row, text="🚽 Hall Pass (1)", font=("Segoe UI", 7, "bold"), bg="#1f1f2e", fg="#38bdf8", relief="flat", command=self.activate_hall_pass)
+        self.hall_pass_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=1)
 
         # Custom YouTube Stream Row (Optional select box)
-        self.custom_yt_row = tk.Frame(self.audio_card, bg="#121212")
-        self.custom_yt_row.pack(fill=tk.X, padx=10, pady=(0, 4))
+        self.custom_yt_row = tk.Frame(self.audio_card, bg="#11111a")
+        self.custom_yt_row.pack(fill=tk.X, padx=8, pady=(1, 4))
 
         self.use_custom_yt_var = tk.BooleanVar(value=self.use_custom_youtube)
         self.custom_yt_cb = tk.Checkbutton(
@@ -2767,16 +3348,16 @@ del "%~f0"
             text="Custom Stream:",
             variable=self.use_custom_yt_var,
             font=("Segoe UI", 7, "bold"),
-            bg="#121212",
-            fg="#ff9800",
+            bg="#11111a",
+            fg="#f59e0b",
             selectcolor="#000000",
-            activebackground="#121212",
-            activeforeground="#ff9800",
+            activebackground="#11111a",
+            activeforeground="#f59e0b",
             command=self.on_toggle_custom_yt
         )
-        self.custom_yt_cb.pack(side=tk.LEFT, padx=(0, 3))
+        self.custom_yt_cb.pack(side=tk.LEFT, padx=(0, 2))
 
-        self.custom_yt_entry = tk.Entry(self.custom_yt_row, bg="#1c1c28", fg="white", insertbackground="white", font=("Segoe UI", 7), bd=0)
+        self.custom_yt_entry = tk.Entry(self.custom_yt_row, bg="#1a1a26", fg="white", insertbackground="white", font=("Segoe UI", 7), bd=0, highlightthickness=1, highlightbackground="#2a2a3c")
         self.custom_yt_entry.insert(0, self.custom_youtube_url)
         self.custom_yt_entry.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=2)
         self.custom_yt_entry.bind("<FocusOut>", self.save_custom_yt_url)
@@ -2784,33 +3365,23 @@ del "%~f0"
 
         self.update_yt_btn_label()
 
-        # Mid-Session Action Buttons Row (accessible on audio card)
-        action_subrow = tk.Frame(self.audio_card, bg="#121212")
-        action_subrow.pack(fill=tk.X, padx=10, pady=(0, 4))
-
-        self.yt_bypass_btn = tk.Button(action_subrow, text="🔓 Unblock YouTube", font=("Segoe UI", 7, "bold"), bg="#1a1a1a", fg="#ff9800", relief="flat", command=self.toggle_youtube_bypass)
-        self.yt_bypass_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(0, 2))
-
-        self.hall_pass_btn = tk.Button(action_subrow, text="🚽 5m Hall Pass (1)", font=("Segoe UI", 7, "bold"), bg="#1a1a1a", fg="#00bcd4", relief="flat", command=self.activate_hall_pass)
-        self.hall_pass_btn.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=(2, 0))
-
-        self.rank_card = tk.Frame(self.root, bg="#121212")
-        self.rank_card.pack(fill=tk.X, padx=15, pady=3)
+        self.rank_card = tk.Frame(self.root, bg="#11111a", highlightbackground="#222233", highlightthickness=1)
+        self.rank_card.pack(fill=tk.X, padx=14, pady=(2, 4))
         
-        self.rank_label = tk.Label(self.rank_card, text="", font=("Segoe UI", 9, "bold"), bg="#121212", fg="#00bcd4")
-        self.rank_label.pack(pady=(4, 1))
+        self.rank_label = tk.Label(self.rank_card, text="", font=("Segoe UI", 8, "bold"), bg="#11111a", fg="#38bdf8")
+        self.rank_label.pack(pady=(3, 1))
         
-        self.prog_canvas = tk.Canvas(self.rank_card, width=380, height=10, bg="#121212", highlightthickness=0)
-        self.prog_canvas.pack(pady=2)
+        self.prog_canvas = tk.Canvas(self.rank_card, width=420, height=8, bg="#1a1a26", highlightthickness=0)
+        self.prog_canvas.pack(pady=1)
         
-        self.reward_label = tk.Label(self.rank_card, text="", font=("Segoe UI", 8), bg="#121212", fg="#aaaaaa")
-        self.reward_label.pack(pady=(1, 4))
+        self.reward_label = tk.Label(self.rank_card, text="", font=("Segoe UI", 7), bg="#11111a", fg="#94a3b8")
+        self.reward_label.pack(pady=(1, 3))
 
-        self.start_btn = tk.Button(self.root, text="🚀 START FOCUS", font=("Segoe UI", 10, "bold"), bg="#4CAF50", fg="white", activebackground="#45a049", activeforeground="white", relief="flat", width=18, pady=4, command=self.on_start_button_click)
-        self.start_btn.pack(pady=4)
+        self.start_btn = tk.Button(self.root, text="🚀 START FOCUS", font=("Segoe UI", 10, "bold"), bg="#16a34a", fg="white", activebackground="#15803d", activeforeground="white", relief="flat", width=22, pady=4, command=self.on_start_button_click)
+        self.start_btn.pack(pady=(3, 2))
 
-        self.micro_start_btn = tk.Button(self.root, text="⚡ I Can't Focus Today (Just 5 Mins)", font=("Segoe UI", 8, "bold"), bg="#141124", fg="#e040fb", activebackground="#e040fb", activeforeground="black", relief="flat", width=28, pady=2, command=self.start_5min_micro_commitment)
-        self.micro_start_btn.pack(pady=(0, 4))
+        self.micro_start_btn = tk.Button(self.root, text="⚡ Low-Friction Start (5 Mins)", font=("Segoe UI", 8, "bold"), bg="#20132e", fg="#c084fc", activebackground="#381a52", activeforeground="white", relief="flat", width=26, pady=2, command=self.start_5min_micro_commitment)
+        self.micro_start_btn.pack(pady=(0, 3))
 
         self.emerge_btn = tk.Button(self.root, text="Stop", font=("Segoe UI", 7), bg="black", fg="#440000", relief="flat", borderwidth=0, highlightthickness=0, activebackground="black", activeforeground="red", cursor="hand2", command=self.trigger_stop_protocol)
 
@@ -2945,7 +3516,11 @@ del "%~f0"
                     matched_tag = tag
                     break
 
-        rec_mins = 60 if days_left <= 3 else (45 if days_left <= 7 else 30)
+        is_exam = closest.get("is_exam", False)
+        if is_exam:
+            rec_mins = 90 if days_left <= 2 else (60 if days_left <= 5 else 45)
+        else:
+            rec_mins = 60 if days_left <= 3 else (45 if days_left <= 7 else 30)
         return closest, days_left, matched_tag, rec_mins
 
     def update_imminent_deadline_banner(self):
@@ -2957,24 +3532,65 @@ del "%~f0"
             return
 
         if not self.deadline_banner.winfo_ismapped() and not self.is_running:
-            self.deadline_banner.pack(after=self.top_card, fill=tk.X, padx=15, pady=(2, 4))
+            self.deadline_banner.pack(after=self.top_card, fill=tk.X, padx=14, pady=(2, 4))
 
-        sum_txt = closest['summary']
-        if len(sum_txt) > 38:
-            sum_txt = sum_txt[:35] + "..."
+        sum_txt = closest.get('summary', '')
+        is_exam = closest.get("is_exam", False)
 
-        if days_left < 0:
-            urgency_txt = f"🚨 OVERDUE: {sum_txt} ({abs(days_left)}d overdue!)"
-            urgency_color = "#f44336"
-        elif days_left == 0:
-            urgency_txt = f"🚨 DUE TODAY: {sum_txt}"
-            urgency_color = "#f44336"
-        elif days_left == 1:
-            urgency_txt = f"🔥 DUE TOMORROW: {sum_txt}"
-            urgency_color = "#ff9800"
+        if is_exam:
+            tinfo = get_exam_timeline(closest, self.deadlines)
+            base_title = get_exam_base_title(sum_txt)
+            if len(base_title) > 38:
+                base_title = base_title[:35] + "..."
+
+            phase = tinfo.get("active_phase", "open")
+            timeline_str = tinfo.get("timeline_str", "")
+
+            if phase == "upcoming":
+                urgency_txt = f"🎓 UPCOMING EXAM: {base_title} ({tinfo.get('status_label', '')})"
+                urgency_color = "#38bdf8"
+            elif phase == "target":
+                urgency_txt = f"🎯 EXAM OPEN: {base_title} • {tinfo.get('status_label', '')}"
+                urgency_color = "#22c55e"
+            elif phase == "closing_today":
+                urgency_txt = f"🚨 EXAM CLOSING TODAY: {base_title} • {tinfo.get('status_label', '')}"
+                urgency_color = "#ef4444"
+            elif phase == "closing":
+                urgency_txt = f"🚨 EXAM CLOSES SOON: {base_title} • {tinfo.get('status_label', '')}"
+                urgency_color = "#f97316"
+            elif phase == "overdue":
+                urgency_txt = f"❌ EXAM CLOSED: {base_title} ({tinfo.get('status_label', '')})"
+                urgency_color = "#ef4444"
+            else:
+                urgency_txt = f"🎓 EXAM: {base_title} ({days_left}d left)"
+                urgency_color = "#f59e0b"
+
+            if hasattr(self, 'dl_timeline_lbl'):
+                if timeline_str:
+                    self.dl_timeline_lbl.config(text=timeline_str)
+                    if not self.dl_timeline_lbl.winfo_ismapped():
+                        self.dl_timeline_lbl.pack(fill=tk.X, expand=True, pady=(1, 0))
+                else:
+                    self.dl_timeline_lbl.pack_forget()
         else:
-            urgency_txt = f"⏳ NEXT UP: {sum_txt} ({days_left}d left • {closest['due']})"
-            urgency_color = "#00bcd4"
+            if hasattr(self, 'dl_timeline_lbl'):
+                self.dl_timeline_lbl.pack_forget()
+
+            if len(sum_txt) > 36:
+                sum_txt = sum_txt[:33] + "..."
+
+            if days_left < 0:
+                urgency_txt = f"🚨 OVERDUE: {sum_txt} ({abs(days_left)}d overdue!)"
+                urgency_color = "#ef4444"
+            elif days_left == 0:
+                urgency_txt = f"🚨 DUE TODAY: {sum_txt}"
+                urgency_color = "#ef4444"
+            elif days_left == 1:
+                urgency_txt = f"🔥 DUE TOMORROW: {sum_txt}"
+                urgency_color = "#f97316"
+            else:
+                urgency_txt = f"⏳ NEXT UP: {sum_txt} ({days_left}d left • {closest.get('due', '')})"
+                urgency_color = "#38bdf8"
 
         self.dl_urgency_lbl.config(text=urgency_txt, fg=urgency_color)
 
@@ -2982,20 +3598,27 @@ del "%~f0"
         combo_vals = ["-- Choose Course --"] + self.custom_tags
         self.dl_banner_combo['values'] = combo_vals
 
+        action_word = "🎓 Prep" if is_exam else "🎯 Target"
+        btn_bg = "#d97706" if is_exam else "#0284c7"
+        btn_fg = "white"
+        lbl_prefix = "🎓 Exam Prep Suggestion:" if is_exam else "💡 Suggestion:"
+
         if matched_tag and matched_tag in self.custom_tags:
             self.dl_banner_combo.set(matched_tag)
-            self.dl_rec_lbl.config(text=f"💡 Suggestion: {rec_mins}m on [{matched_tag}]")
+            self.dl_rec_lbl.config(text=f"{lbl_prefix} {rec_mins}m on [{matched_tag}]")
             self.dl_action_btn.config(
-                text=f"🎯 Target & {rec_mins}m",
-                bg="#00bcd4",
+                text=f"{action_word} & {rec_mins}m",
+                bg=btn_bg,
+                fg=btn_fg,
                 command=lambda t=matched_tag, m=rec_mins: self.apply_deadline_recommendation(t, m)
             )
         else:
             self.dl_banner_combo.set("-- Choose Course --")
-            self.dl_rec_lbl.config(text=f"💡 Suggestion: {rec_mins}m • Assign tag:")
+            self.dl_rec_lbl.config(text=f"{lbl_prefix} {rec_mins}m • Assign tag:")
             self.dl_action_btn.config(
-                text="🎯 Target",
-                bg="#333333",
+                text=action_word,
+                bg="#262638",
+                fg="white",
                 command=lambda c=closest, m=rec_mins: self.prompt_or_apply_banner_tag(c, m)
             )
 
@@ -3065,8 +3688,8 @@ del "%~f0"
         self.canvas.configure(bg="#000000")
         self.audio_card.configure(bg="#000000")
         
-        self.audio_card.pack(fill=tk.X, padx=15, pady=(20, 10))
-        self.emerge_btn.place(x=405, y=750, width=35, height=20)
+        self.audio_card.pack(fill=tk.X, padx=14, pady=(20, 10))
+        self.emerge_btn.place(x=430, y=780, width=35, height=20)
         self.update_loop()
 
     def finish_chain_session(self):
@@ -3275,14 +3898,14 @@ del "%~f0"
         if self.is_running: return
         self.mode = mode_str
         if self.mode == "pomodoro":
-            self.custom_mode_btn.config(bg="#1f1f1f", fg="#ffffff")
-            self.pomo_mode_btn.config(bg="#00bcd4", fg="black")
+            self.custom_mode_btn.config(bg="#1a1a24", fg="#94a3b8")
+            self.pomo_mode_btn.config(bg="#0284c7", fg="white")
             self.selected_minutes = 25
             self.controls_frame.pack_forget()
         else:
-            self.pomo_mode_btn.config(bg="#1f1f1f", fg="#ffffff")
-            self.custom_mode_btn.config(bg="#00bcd4", fg="black")
-            self.controls_frame.pack(after=self.mode_frame, pady=2)
+            self.pomo_mode_btn.config(bg="#1a1a24", fg="#94a3b8")
+            self.custom_mode_btn.config(bg="#0284c7", fg="white")
+            self.controls_frame.pack(after=self.stats_label, pady=(1, 1))
         
         self.sync_minute_entry()
         self.draw_clock(self.selected_minutes)
@@ -3794,9 +4417,9 @@ del "%~f0"
         self.canvas.configure(bg="#000000")
         self.audio_card.configure(bg="#000000")
         
-        self.audio_card.pack(fill=tk.X, padx=15, pady=(20, 10))
+        self.audio_card.pack(fill=tk.X, padx=14, pady=(20, 10))
 
-        self.emerge_btn.place(x=405, y=750, width=35, height=20)
+        self.emerge_btn.place(x=430, y=780, width=35, height=20)
         self.update_loop()
 
     def start_break_mode(self, duration_mins):
@@ -4005,26 +4628,26 @@ del "%~f0"
         self.audio_card.pack_forget()
         self.root.configure(bg="#000000")
         self.canvas.configure(bg="#000000")
-        self.audio_card.configure(bg="#121212")
+        self.audio_card.configure(bg="#11111a")
         self.emerge_btn.place_forget()
         
         if hasattr(self, 'admin_banner') and not is_admin():
             self.admin_banner.pack(fill=tk.X, side=tk.TOP)
-        self.top_card.pack(fill=tk.X, padx=15, pady=(10, 4))
+        self.top_card.pack(fill=tk.X, padx=14, pady=(10, 4))
         if hasattr(self, 'deadline_banner'):
-            self.deadline_banner.pack(after=self.top_card, fill=tk.X, padx=15, pady=(2, 4))
+            self.deadline_banner.pack(after=self.top_card, fill=tk.X, padx=14, pady=(2, 4))
             self.update_imminent_deadline_banner()
-        self.mode_frame.pack(pady=2)
-        self.stats_label.pack(pady=(2, 2))
+        self.mode_frame.pack(pady=(2, 2))
+        self.stats_label.pack(pady=(1, 1))
         if self.mode == "custom":
-            self.controls_frame.pack(pady=2)
-        self.canvas.pack(pady=2)
-        self.goals_card.pack(fill=tk.X, padx=15, pady=3)
-        self.audio_card.pack(fill=tk.X, padx=15, pady=3)
-        self.rank_card.pack(fill=tk.X, padx=15, pady=3)
-        self.start_btn.pack(pady=4)
+            self.controls_frame.pack(pady=(1, 1))
+        self.canvas.pack(pady=(2, 2))
+        self.goals_card.pack(fill=tk.X, padx=14, pady=(2, 3))
+        self.audio_card.pack(fill=tk.X, padx=14, pady=(2, 3))
+        self.rank_card.pack(fill=tk.X, padx=14, pady=(2, 4))
+        self.start_btn.pack(pady=(3, 2))
         if hasattr(self, 'micro_start_btn'):
-            self.micro_start_btn.pack(pady=(0, 4))
+            self.micro_start_btn.pack(pady=(0, 3))
         self.draw_clock(self.selected_minutes)
 
     def enforce_rules(self):
