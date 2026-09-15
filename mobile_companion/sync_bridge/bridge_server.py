@@ -188,8 +188,8 @@ def index():
         <p>Android companion for study timers, app blocker & Do Not Disturb.</p>
         <a class="btn" href="/download">⬇️ Download APK (6.6 MB)</a>
         <div class="steps">
-            <div class="step"><b>1. Download & Open:</b> Tap the button above, then tap the downloaded file to install.</div>
-            <div class="step"><b>2. Grant Permissions:</b> Open the app and enable the 3 permissions (DND, Usage Access, Notifications).</div>
+            <div class="step"><b>1. Download &amp; Install:</b> Tap the button above to download. (If Play Protect warns about an unknown developer, tap <i>More details ▾ &rarr; Install anyway</i>).</div>
+            <div class="step"><b>2. Grant Permissions:</b> Open FocusFlow and tap Enable on permissions.<br><i>⚠️ If Android 13/14 says "Restricted setting":</i> Open phone Settings &rarr; Apps &rarr; FocusFlow &rarr; tap 3 dots (⋮) &rarr; "Allow restricted settings".</div>
             <div class="step"><b>3. Sync to PC:</b> Enter this address in the top bar and tap <b>Sync</b>:<br><span class="badge">{ip}:5050</span></div>
         </div>
     </div>
@@ -218,10 +218,10 @@ def get_version():
     apk_path = get_apk_path()
     size_mb = f"{os.path.getsize(apk_path) / (1024 * 1024):.1f} MB" if (apk_path and os.path.exists(apk_path)) else "6.2 MB"
     return jsonify({
-        "versionCode": 7,
-        "versionName": "1.0.6",
+        "versionCode": 8,
+        "versionName": "1.0.7",
         "downloadUrl": "/download",
-        "releaseNotes": "1-tap Hide Notification Icon from status bar, Turn Off action in notification drawer, swipeable silent guardian",
+        "releaseNotes": "In-app Security & Privacy Guarantee dialog, Android 13/14 restricted settings guidance, 1-tap hide notification icon",
         "apkSize": size_mb,
         "minSupportedVersion": 1
     })
