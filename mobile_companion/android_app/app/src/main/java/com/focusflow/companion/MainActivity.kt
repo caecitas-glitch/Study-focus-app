@@ -72,6 +72,8 @@ class MainActivity : AppCompatActivity(), SyncClient.SyncCallback {
 
     override fun onResume() {
         super.onResume()
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        binding.switchGuardianToggle.isChecked = prefs.getBoolean(KEY_GUARDIAN_ENABLED, true)
         updatePermissionBadges()
         updateUsageLimitsUI()
         startGuardianServiceIfPermitted()
@@ -178,6 +180,21 @@ class MainActivity : AppCompatActivity(), SyncClient.SyncCallback {
                     startService(serviceIntent)
                 }
                 Toast.makeText(this, "Background guardian disabled (Limits active only during focus)", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        binding.btnHideGuardianNotif.setOnClickListener {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                val intent = Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                    putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                    putExtra(Settings.EXTRA_CHANNEL_ID, FocusBlockerService.CHANNEL_GUARDIAN)
+                }
+                startActivity(intent)
+            } else {
+                val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                    data = Uri.parse("package:$packageName")
+                }
+                startActivity(intent)
             }
         }
 
