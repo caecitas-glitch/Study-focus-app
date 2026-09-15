@@ -26,7 +26,7 @@ if sys.stderr is None:
     sys.stderr = open(os.devnull, 'w')
 
 # --- Application Info & Versioning ---
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 GITHUB_REPO = "caecitas-glitch/Study-focus-app"
 
 def parse_version_str(v_str):
@@ -2824,6 +2824,9 @@ class FocusApp:
                 local_ver = parse_version_str(APP_VERSION)
 
                 if remote_ver > local_ver:
+                    if getattr(self, '_last_prompted_tag', None) == remote_tag:
+                        return
+                    self._last_prompted_tag = remote_tag
                     exe_asset = None
                     for a in data.get("assets", []):
                         if a.get("name", "").lower().endswith(".exe"):
