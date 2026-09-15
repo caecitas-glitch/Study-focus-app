@@ -420,6 +420,17 @@
                     android:text="Blocks TikTok, Instagram, Reddit, X, etc."
                     android:textColor="@color/text_muted"
                     android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/btnSecurityInfo"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:text="🔒 Security &amp; Restricted Settings Help"
+                    android:textColor="@color/accent_primary"
+                    android:textSize="11sp" />
             </LinearLayout>
 
             <Button
