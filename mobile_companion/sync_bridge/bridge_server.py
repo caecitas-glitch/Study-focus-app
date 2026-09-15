@@ -218,10 +218,10 @@ def get_version():
     apk_path = get_apk_path()
     size_mb = f"{os.path.getsize(apk_path) / (1024 * 1024):.1f} MB" if (apk_path and os.path.exists(apk_path)) else "6.2 MB"
     return jsonify({
-        "versionCode": 5,
-        "versionName": "1.0.4",
+        "versionCode": 6,
+        "versionName": "1.0.5",
         "downloadUrl": "/download",
-        "releaseNotes": "7 AM Daily Morning Fuel motivation quotes, silent background guardian (no status bar icon), background guardian toggle switch",
+        "releaseNotes": "Active 9 PM bedtime blocker overlay (+5m snooze), fix update notification loop, resilient APK installer",
         "apkSize": size_mb,
         "minSupportedVersion": 1
     })
