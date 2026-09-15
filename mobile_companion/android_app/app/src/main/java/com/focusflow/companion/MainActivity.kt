@@ -151,15 +151,25 @@ class MainActivity : AppCompatActivity(), SyncClient.SyncCallback {
             dndManager.openDndSettings()
         }
 
+        binding.btnSecurityInfo.setOnClickListener {
+            showSecurityAndPermissionDialog(null)
+        }
+
         binding.btnGrantBlocker.setOnClickListener {
-            if (!FocusBlockerService.hasUsageStatsPermission(this)) {
-                startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
-            } else if (!FocusBlockerService.hasOverlayPermission(this)) {
-                val intent = Intent(
-                    Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
-                    Uri.parse("package:$packageName")
-                )
-                startActivity(intent)
+            val hasUsage = FocusBlockerService.hasUsageStatsPermission(this)
+            val hasOverlay = FocusBlockerService.hasOverlayPermission(this)
+            if (hasUsage && hasOverlay) return@setOnClickListener
+
+            showSecurityAndPermissionDialog {
+                if (!FocusBlockerService.hasUsageStatsPermission(this)) {
+                    startActivity(Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS))
+                } else if (!FocusBlockerService.hasOverlayPermission(this)) {
+                    val intent = Intent(
+                        Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                        Uri.parse("package:$packageName")
+                    )
+                    startActivity(intent)
+                }
             }
         }
 
@@ -427,6 +437,46 @@ class MainActivity : AppCompatActivity(), SyncClient.SyncCallback {
                 else -> "Requires Display Over Apps to show blocker screen"
             }
         }
+    }
+
+    private fun showSecurityAndPermissionDialog(onProceed: (() -> Unit)?) {
+        val message = """
+FocusFlow is 100% open-source and respects your privacy.
+
+Why these permissions are needed:
+• Usage Access: To detect when distracting apps or Gemini are open so FocusFlow can enforce study timers and your 9 PM bedtime limit.
+• Display Over Apps: To present the full-screen wind-down and study session blocker overlay.
+
+What FocusFlow NEVER does:
+✓ Never accesses banking, passwords, or personal files
+✓ Zero analytics, zero ad networks, zero trackers
+✓ 100% local — your data never leaves your device
+
+⚠️ If Android 13/14 says "Restricted setting":
+1. Tap "Open App Settings" below
+2. Tap the 3 vertical dots (⋮) in the top-right corner
+3. Tap "Allow restricted settings" & enter your PIN
+4. Return to FocusFlow and tap Enable!
+        """.trimIndent()
+
+        AlertDialog.Builder(this)
+            .setTitle("🛡️ Security & Privacy Guarantee")
+            .setMessage(message)
+            .setPositiveButton(if (onProceed != null) "Continue to Settings" else "OK") { _, _ ->
+                onProceed?.invoke()
+            }
+            .setNeutralButton("Open App Settings (3 Dots)") { _, _ ->
+                try {
+                    val intent = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                        data = Uri.parse("package:$packageName")
+                    }
+                    startActivity(intent)
+                } catch (e: Exception) {
+                    startActivity(Intent(Settings.ACTION_SETTINGS))
+                }
+            }
+            .setNegativeButton(if (onProceed != null) "Cancel" else null, null)
+            .show()
     }
 
     private fun updateUsageLimitsUI() {
