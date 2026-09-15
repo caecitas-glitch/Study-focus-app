@@ -26,7 +26,7 @@ Instead of just ringing a bell like standard Pomodoro apps, it aggressively bloc
 - **Automatic Do Not Disturb**: Mutes all incoming notifications the moment a focus session begins on your PC.
 - **Continuous Sitting Limits**: Set per-session limits on any app (e.g. 15m/session on YouTube, Instagram, or TikTok) with an enforced 3-minute cooldown to stop doomscroll relapse.
 - **7:00 AM Morning Fuel**: Starts your day at 7:00 AM with high-impact discipline and mindset quotes.
-- **9:00 PM Wind-Down Warning**: Alerts you when opening late-night apps (like Gemini or social media) past 9:00 PM.
+- **9:00 PM Bedtime Blocker & Overlay**: Actively closes distracting apps (like Gemini or social media) past 9:00 PM, kicks to the home screen, and displays a full-screen wind-down overlay with "+5m Wind Down" and "Put Phone Away" actions.
 - **Silent Background Guardian**: Runs silently without cluttering your status bar, with an in-app toggle to turn off background monitoring whenever you want.
 
 ---
