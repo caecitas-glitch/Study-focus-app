@@ -38,10 +38,17 @@ Instead of just ringing a bell like standard Pomodoro apps, it aggressively bloc
 3. **Right-click -> Run as Administrator**.  
    *(Admin rights are required to edit the Windows hosts file during a session to block websites and restore them when done).*
 
-### Pairing Your Android Phone:
-1. When `focus_app.exe` starts, click the **"📱 Phone Sync"** button on the dashboard to view your local Wi-Fi URL (e.g., `http://192.168.1.100:5050`).
-2. Open that URL in your phone's browser and tap **Download Companion APK** (or install the bundled APK from the `mobile_companion/` folder).
-3. In the mobile app, enter the address shown on your PC and tap **Sync**. Everything connects automatically.
+### 📱 Installing the Android Companion App:
+1. **Download the APK**: Download **`focusflow-companion.apk`** from [Releases](https://github.com/caecitas-glitch/Study-focus-app/releases/latest) (or via the **"📱 Phone Sync"** button in the desktop app).
+2. **Install**:
+   - If Play Protect warns *"Unsafe app blocked"* or *"Unknown developer"*, tap **More details ▾** → **Install anyway** *(standard for open-source apps downloaded outside Google Play)*.
+3. **⚠️ If Android 13 or 14 shows "Restricted setting"**:
+   Modern Android restricts sensitive permissions on sideloaded apps by default until manually unlocked:
+   - Go to phone **Settings → Apps → FocusFlow**.
+   - Tap the **3 vertical dots (⋮)** in the top-right corner.
+   - Tap **"Allow restricted settings"** and confirm with your fingerprint/PIN.
+4. **Grant Permissions**: Open FocusFlow and tap **Enable** on the permissions (Do Not Disturb, Usage Access, and Display Over Apps).
+5. **Sync to PC**: Enter the address shown in your desktop app under **📱 Phone Sync** and tap **Sync**. Everything connects automatically.
 
 All study history, tags, deadlines, and streak count are stored locally in `focus_data.json`. No cloud accounts or subscriptions required.
 
