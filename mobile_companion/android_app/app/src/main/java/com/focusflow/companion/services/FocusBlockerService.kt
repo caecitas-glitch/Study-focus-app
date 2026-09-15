@@ -13,6 +13,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
+import android.net.Uri
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -219,6 +220,8 @@ class FocusBlockerService : Service() {
             ACTION_STOP_ALL -> {
                 isSessionActive = false
                 isGuardActive = false
+                val prefs = getSharedPreferences("focusflow_prefs", Context.MODE_PRIVATE)
+                prefs.edit().putBoolean("key_guardian_enabled", false).apply()
                 dndManager.restoreNotifications()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
@@ -469,20 +472,58 @@ class FocusBlockerService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        // Action: Turn off guardian directly from notification drawer
+        val stopIntent = Intent(this, FocusBlockerService::class.java).apply {
+            action = ACTION_STOP_ALL
+        }
+        val stopPendingIntent = PendingIntent.getService(
+            this, 10, stopIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        // Action: Hide notification from status bar via OS channel settings
+        val hideSettingsIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
+                putExtra(Settings.EXTRA_APP_PACKAGE, packageName)
+                putExtra(Settings.EXTRA_CHANNEL_ID, CHANNEL_GUARDIAN)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+        } else {
+            Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS).apply {
+                data = Uri.parse("package:$packageName")
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+        }
+        val hidePendingIntent = PendingIntent.getActivity(
+            this, 11, hideSettingsIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
         return NotificationCompat.Builder(this, CHANNEL_GUARDIAN)
             .setContentTitle("FocusFlow Silent Guardian")
             .setContentText("Limits & bedtime active silently")
-            .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
-            .setOngoing(true)
+            .setSmallIcon(android.R.drawable.ic_menu_compass)
+            .setOngoing(false)
+            .setSilent(true)
             .setContentIntent(pendingIntent)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setShowWhen(false)
+            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Turn Off", stopPendingIntent)
+            .addAction(android.R.drawable.ic_menu_preferences, "Hide Icon", hidePendingIntent)
             .build()
     }
 
     private fun createNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val nm = getSystemService(NotificationManager::class.java) ?: return
+
+            // Clean up old cached channels so OS doesn't use old noisy priorities
+            try {
+                nm.deleteNotificationChannel("focusflow_guardian")
+                nm.deleteNotificationChannel("focusflow_guardian_v2")
+            } catch (e: Exception) { }
+
             val sessionChannel = NotificationChannel(
                 CHANNEL_SESSION,
                 "FocusFlow Active Session",
@@ -497,6 +538,8 @@ class FocusBlockerService : Service() {
                 setShowBadge(false)
                 enableLights(false)
                 enableVibration(false)
+                setSound(null, null)
+                lockscreenVisibility = Notification.VISIBILITY_SECRET
             }
             val alertChannel = NotificationChannel(
                 CHANNEL_ALERTS,
@@ -514,7 +557,6 @@ class FocusBlockerService : Service() {
                 enableVibration(true)
             }
 
-            val nm = getSystemService(NotificationManager::class.java)
             nm.createNotificationChannel(sessionChannel)
             nm.createNotificationChannel(guardianChannel)
             nm.createNotificationChannel(alertChannel)
@@ -536,7 +578,7 @@ class FocusBlockerService : Service() {
 
     companion object {
         const val CHANNEL_SESSION = "focusflow_active_session"
-        const val CHANNEL_GUARDIAN = "focusflow_guardian"
+        const val CHANNEL_GUARDIAN = "focusflow_guardian_v3"
         const val CHANNEL_ALERTS = "focusflow_app_closure_alerts"
         const val CHANNEL_BEDTIME = "focusflow_bedtime_alerts"
 
