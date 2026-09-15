@@ -26,7 +26,7 @@ if sys.stderr is None:
     sys.stderr = open(os.devnull, 'w')
 
 # --- Application Info & Versioning ---
-APP_VERSION = "1.0.6"
+APP_VERSION = "1.0.7"
 GITHUB_REPO = "caecitas-glitch/Study-focus-app"
 
 def parse_version_str(v_str):
