@@ -541,6 +541,62 @@
                 app:strokeColor="@color/accent_primary" />
         </LinearLayout>
 
+        <!-- 9:00 PM Bedtime Lock & Wind-Down Card -->
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="10dp"
+            android:background="@drawable/card_bg"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="16dp">
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="🌙 9:00 PM Bedtime Lock"
+                    android:textColor="@color/text_main"
+                    android:textSize="14sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tvBedtimeStatus"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="2dp"
+                    android:text="Active 21:00 - 05:00 • Gemini &amp; apps locked"
+                    android:textColor="@color/text_muted"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/btnBatteryOptHelp"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:layout_marginTop="6dp"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:text="🔋 Ensure Unrestricted Battery"
+                    android:textColor="@color/accent_primary"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <Button
+                android:id="@+id/btnTestBedtime"
+                style="@style/Widget.MaterialComponents.Button.OutlinedButton"
+                android:layout_width="wrap_content"
+                android:layout_height="36dp"
+                android:text="Test (5s)"
+                android:textColor="@color/accent_primary"
+                android:textSize="11sp"
+                app:strokeColor="@color/accent_primary" />
+        </LinearLayout>
+
         <!-- App Usage Limits, Custom Rules & Bedtime Section -->
         <LinearLayout
             android:layout_width="match_parent"
