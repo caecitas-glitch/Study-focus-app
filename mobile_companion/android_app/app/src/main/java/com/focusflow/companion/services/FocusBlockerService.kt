@@ -256,6 +256,7 @@ class FocusBlockerService : Service() {
     }
 
     private fun isLateNightHour(): Boolean {
+        if (usageLimitManager.isBedtimeTestingActive()) return true
         val cal = Calendar.getInstance()
         val hour = cal.get(Calendar.HOUR_OF_DAY)
         // 9:00 PM (21:00) until 05:00 AM
@@ -265,56 +266,86 @@ class FocusBlockerService : Service() {
     private fun showLateNightBedtimeAlert(pkg: String) {
         val appName = formatPackageName(pkg)
 
-        // 1. Kick user out of distracting app to Android Home Screen
-        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_HOME)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        try {
-            startActivity(homeIntent)
-        } catch (e: Exception) { }
-
-        // 2. Clear active monitored package and record exit
+        // Clear active monitored package and record exit
         packageLastExitTimes[pkg] = System.currentTimeMillis()
         activeMonitoredPackage = null
 
-        // 3. Launch BlockerOverlayActivity with REASON_BEDTIME
-        try {
-            val overlayIntent = Intent(this, BlockerOverlayActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                putExtra(BlockerOverlayActivity.EXTRA_RAW_PACKAGE, pkg)
-                putExtra(BlockerOverlayActivity.EXTRA_PACKAGE_NAME, appName)
-                putExtra(BlockerOverlayActivity.EXTRA_REASON, BlockerOverlayActivity.REASON_BEDTIME)
-            }
-            startActivity(overlayIntent)
-        } catch (e: Exception) { }
+        // Android 14 (API 34) requires explicit opt-in for background activity launches
+        val options = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            android.app.ActivityOptions.makeBasic().apply {
+                setPendingIntentBackgroundActivityStartMode(
+                    android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+                )
+            }.toBundle()
+        } else {
+            android.app.ActivityOptions.makeBasic().toBundle()
+        }
 
-        // 4. Loud high-priority Heads-Up bedtime alert notification
-        val openIntent = Intent(this, MainActivity::class.java)
-        val mainPendingIntent = PendingIntent.getActivity(
-            this, 0, openIntent,
+        val overlayIntent = Intent(this, BlockerOverlayActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+            putExtra(BlockerOverlayActivity.EXTRA_RAW_PACKAGE, pkg)
+            putExtra(BlockerOverlayActivity.EXTRA_PACKAGE_NAME, appName)
+            putExtra(BlockerOverlayActivity.EXTRA_REASON, BlockerOverlayActivity.REASON_BEDTIME)
+        }
+
+        val pendingOverlay = PendingIntent.getActivity(
+            this,
+            (System.currentTimeMillis() % 10000).toInt(),
+            overlayIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        var overlayLaunched = false
+        try {
+            startActivity(overlayIntent, options)
+            overlayLaunched = true
+        } catch (e: Exception) {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    pendingOverlay.send(options)
+                } else {
+                    pendingOverlay.send()
+                }
+                overlayLaunched = true
+            } catch (e2: Exception) { }
+        }
+
+        // If overlay couldn't launch directly, bounce user to Home Screen
+        if (!overlayLaunched) {
+            val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_HOME)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
+            }
+            try {
+                startActivity(homeIntent, options)
+            } catch (e: Exception) { }
+        }
+
+        // High-priority full screen intent notification (guarantees display on Android 10-14)
         val title = "🌙 Past 9:00 PM: Time for Bed!"
-        val message = "FocusFlow closed $appName. Step away, protect your sleep, and recharge for tomorrow."
+        val message = "FocusFlow closed $appName. Step away, protect your sleep, and recharge."
 
         val notification = NotificationCompat.Builder(this, CHANNEL_BEDTIME)
             .setContentTitle(title)
             .setContentText(message)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(message))
+            .setStyle(NotificationCompat.BigTextStyle().bigText("FocusFlow closed $appName because it's past 9:00 PM. Put your phone away, protect your sleep schedule, and recharge!"))
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setPriority(NotificationCompat.PRIORITY_MAX)
-            .setDefaults(Notification.DEFAULT_ALL)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setFullScreenIntent(pendingOverlay, true)
             .setAutoCancel(true)
-            .setContentIntent(mainPendingIntent)
+            .setContentIntent(pendingOverlay)
+            .setDefaults(Notification.DEFAULT_ALL)
             .build()
 
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
         nm.notify(NOTIFICATION_BEDTIME_ID, notification)
 
         handler.post {
-            Toast.makeText(applicationContext, "🌙 FocusFlow: It's past 9 PM! Closed $appName for sleep.", Toast.LENGTH_LONG).show()
+            Toast.makeText(applicationContext, "🌙 Past 9 PM! FocusFlow closed $appName for sleep.", Toast.LENGTH_LONG).show()
         }
     }
 
@@ -324,20 +355,10 @@ class FocusBlockerService : Service() {
     private fun forceCloseAndExplain(pkg: String, reason: String) {
         val appName = formatPackageName(pkg)
 
-        // 1. Kick user out of distracting app to Android Home Screen
-        val homeIntent = Intent(Intent.ACTION_MAIN).apply {
-            addCategory(Intent.CATEGORY_HOME)
-            flags = Intent.FLAG_ACTIVITY_NEW_TASK
-        }
-        try {
-            startActivity(homeIntent)
-        } catch (e: Exception) { }
-
-        // 2. Clear active monitored package and record exit
+        // Clear active monitored package and record exit
         packageLastExitTimes[pkg] = System.currentTimeMillis()
         activeMonitoredPackage = null
 
-        // 3. Show clear Heads-Up alert & Toast
         val explanation = when (reason) {
             BlockerOverlayActivity.REASON_SESSION_LIMIT -> {
                 val limit = usageLimitManager.getSessionLimitForPackage(pkg)
@@ -356,42 +377,89 @@ class FocusBlockerService : Service() {
         handler.post {
             Toast.makeText(applicationContext, "⚠️ $explanation", Toast.LENGTH_LONG).show()
         }
-        postClosureNotification(appName, explanation)
 
-        // 4. Launch BlockerOverlayActivity (requires overlay permission)
+        val options = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            android.app.ActivityOptions.makeBasic().apply {
+                setPendingIntentBackgroundActivityStartMode(
+                    android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED
+                )
+            }.toBundle()
+        } else {
+            android.app.ActivityOptions.makeBasic().toBundle()
+        }
+
+        val overlayIntent = Intent(this, BlockerOverlayActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or
+                    Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP or
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+            putExtra(BlockerOverlayActivity.EXTRA_RAW_PACKAGE, pkg)
+            putExtra(BlockerOverlayActivity.EXTRA_PACKAGE_NAME, appName)
+            putExtra(BlockerOverlayActivity.EXTRA_REASON, reason)
+            putExtra(BlockerOverlayActivity.EXTRA_SUBJECT, currentSubject)
+            putExtra(BlockerOverlayActivity.EXTRA_REMAINING_SEC, remainingSeconds)
+            putExtra(BlockerOverlayActivity.EXTRA_LIMIT_MINS, usageLimitManager.getSessionLimitForPackage(pkg))
+        }
+
+        val pendingOverlay = PendingIntent.getActivity(
+            this,
+            (System.currentTimeMillis() % 10000).toInt(),
+            overlayIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        var overlayLaunched = false
         try {
-            val overlayIntent = Intent(this, BlockerOverlayActivity::class.java).apply {
-                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
-                putExtra(BlockerOverlayActivity.EXTRA_RAW_PACKAGE, pkg)
-                putExtra(BlockerOverlayActivity.EXTRA_PACKAGE_NAME, appName)
-                putExtra(BlockerOverlayActivity.EXTRA_REASON, reason)
-                putExtra(BlockerOverlayActivity.EXTRA_SUBJECT, currentSubject)
-                putExtra(BlockerOverlayActivity.EXTRA_REMAINING_SEC, remainingSeconds)
-                putExtra(BlockerOverlayActivity.EXTRA_LIMIT_MINS, usageLimitManager.getSessionLimitForPackage(pkg))
+            startActivity(overlayIntent, options)
+            overlayLaunched = true
+        } catch (e: Exception) {
+            try {
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+                    pendingOverlay.send(options)
+                } else {
+                    pendingOverlay.send()
+                }
+                overlayLaunched = true
+            } catch (e2: Exception) { }
+        }
+
+        if (!overlayLaunched) {
+            val homeIntent = Intent(Intent.ACTION_MAIN).apply {
+                addCategory(Intent.CATEGORY_HOME)
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK
             }
-            startActivity(overlayIntent)
-        } catch (e: Exception) { }
+            try {
+                startActivity(homeIntent, options)
+            } catch (e: Exception) { }
+        }
+
+        postClosureNotification(appName, explanation, pendingOverlay)
     }
 
-    private fun postClosureNotification(appName: String, text: String) {
+    private fun postClosureNotification(appName: String, text: String, pendingOverlay: PendingIntent? = null) {
         val openIntent = Intent(this, MainActivity::class.java)
-        val pendingIntent = PendingIntent.getActivity(
+        val defaultPendingIntent = PendingIntent.getActivity(
             this, 0, openIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        val notification = NotificationCompat.Builder(this, CHANNEL_ALERTS)
+        val targetPending = pendingOverlay ?: defaultPendingIntent
+
+        val notificationBuilder = NotificationCompat.Builder(this, CHANNEL_ALERTS)
             .setContentTitle("FocusFlow Closed $appName")
             .setContentText(text)
             .setStyle(NotificationCompat.BigTextStyle().bigText(text))
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
-            .setContentIntent(pendingIntent)
-            .build()
+            .setContentIntent(targetPending)
+
+        if (pendingOverlay != null) {
+            notificationBuilder.setFullScreenIntent(pendingOverlay, true)
+        }
 
         val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        nm.notify(NOTIFICATION_ALERT_ID, notification)
+        nm.notify(NOTIFICATION_ALERT_ID, notificationBuilder.build())
     }
 
     /**
@@ -472,15 +540,6 @@ class FocusBlockerService : Service() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
-        // Action: Turn off guardian directly from notification drawer
-        val stopIntent = Intent(this, FocusBlockerService::class.java).apply {
-            action = ACTION_STOP_ALL
-        }
-        val stopPendingIntent = PendingIntent.getService(
-            this, 10, stopIntent,
-            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
-        )
-
         // Action: Hide notification from status bar via OS channel settings
         val hideSettingsIntent = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             Intent(Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS).apply {
@@ -501,15 +560,14 @@ class FocusBlockerService : Service() {
 
         return NotificationCompat.Builder(this, CHANNEL_GUARDIAN)
             .setContentTitle("FocusFlow Silent Guardian")
-            .setContentText("Limits & bedtime active silently")
+            .setContentText("Limits & 9:00 PM lock active silently")
             .setSmallIcon(android.R.drawable.ic_menu_compass)
-            .setOngoing(false)
+            .setOngoing(true)
             .setSilent(true)
             .setContentIntent(pendingIntent)
             .setPriority(NotificationCompat.PRIORITY_MIN)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setShowWhen(false)
-            .addAction(android.R.drawable.ic_menu_close_clear_cancel, "Turn Off", stopPendingIntent)
             .addAction(android.R.drawable.ic_menu_preferences, "Hide Icon", hidePendingIntent)
             .build()
     }
