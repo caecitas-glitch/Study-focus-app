@@ -37,18 +37,31 @@ class UsageLimitManager(private val context: Context) {
         const val SESSION_COOLDOWN_MINUTES = 3
 
         val DEFAULT_RULES = listOf(
-            AppRule("com.google.android.youtube", "YouTube", "📺", isStudyBlocked = true, sessionLimitMinutes = 20, warnAfter9Pm = false),
+            AppRule("com.google.android.youtube", "YouTube", "📺", isStudyBlocked = true, sessionLimitMinutes = 20, warnAfter9Pm = true),
             AppRule("com.google.android.apps.bard", "Google Gemini", "🤖", isStudyBlocked = true, sessionLimitMinutes = 0, warnAfter9Pm = true),
+            AppRule("com.google.android.googlequicksearchbox", "Google / Gemini", "🤖", isStudyBlocked = true, sessionLimitMinutes = 0, warnAfter9Pm = true),
             AppRule("com.instagram.android", "Instagram", "📸", isStudyBlocked = true, sessionLimitMinutes = 15, warnAfter9Pm = true),
             AppRule("com.zhiliaoapp.musically", "TikTok", "🎵", isStudyBlocked = true, sessionLimitMinutes = 15, warnAfter9Pm = true),
             AppRule("com.ss.android.ugc.trill", "TikTok", "🎵", isStudyBlocked = true, sessionLimitMinutes = 15, warnAfter9Pm = true),
             AppRule("com.reddit.frontpage", "Reddit", "💬", isStudyBlocked = true, sessionLimitMinutes = 20, warnAfter9Pm = true),
-            AppRule("com.twitter.android", "X (Twitter)", "🐦", isStudyBlocked = true, sessionLimitMinutes = 15, warnAfter9Pm = false),
-            AppRule("com.discord", "Discord", "🎮", isStudyBlocked = true, sessionLimitMinutes = 0, warnAfter9Pm = false),
+            AppRule("com.twitter.android", "X (Twitter)", "🐦", isStudyBlocked = true, sessionLimitMinutes = 15, warnAfter9Pm = true),
+            AppRule("com.discord", "Discord", "🎮", isStudyBlocked = true, sessionLimitMinutes = 0, warnAfter9Pm = true),
             AppRule("com.netflix.mediaclient", "Netflix", "🍿", isStudyBlocked = true, sessionLimitMinutes = 0, warnAfter9Pm = true),
-            AppRule("tv.twitch.android.app", "Twitch", "👾", isStudyBlocked = true, sessionLimitMinutes = 30, warnAfter9Pm = false),
-            AppRule("com.snapchat.android", "Snapchat", "👻", isStudyBlocked = true, sessionLimitMinutes = 0, warnAfter9Pm = false)
+            AppRule("tv.twitch.android.app", "Twitch", "👾", isStudyBlocked = true, sessionLimitMinutes = 30, warnAfter9Pm = true),
+            AppRule("com.snapchat.android", "Snapchat", "👻", isStudyBlocked = true, sessionLimitMinutes = 0, warnAfter9Pm = true),
+            AppRule("com.android.chrome", "Google Chrome", "🌐", isStudyBlocked = true, sessionLimitMinutes = 20, warnAfter9Pm = true)
         )
+    }
+
+    fun isGeminiOrAiPackage(pkg: String): Boolean {
+        val lower = pkg.lowercase()
+        return lower.contains("apps.bard") ||
+                lower.contains("gemini") ||
+                lower.contains("googlequicksearchbox") ||
+                lower.contains("googleassistant") ||
+                lower.contains("openai.chatgpt") ||
+                lower.contains("anthropic.claude") ||
+                lower.contains("copilot")
     }
 
     /**
@@ -69,9 +82,9 @@ class UsageLimitManager(private val context: Context) {
                     merged.add(def)
                 }
             }
-            // Ensure Gemini always retains bedtime warning unless explicitly cleared
+            // Ensure Gemini, AI assistants, and all distracting apps retain bedtime lock
             for (r in merged) {
-                if (r.packageName.contains("apps.bard") || r.packageName.contains("apps.gemini") || r.packageName.contains("gemini")) {
+                if (isGeminiOrAiPackage(r.packageName) || r.isStudyBlocked || r.sessionLimitMinutes > 0) {
                     r.warnAfter9Pm = true
                 }
             }
@@ -87,11 +100,11 @@ class UsageLimitManager(private val context: Context) {
     }
 
     fun getRuleForPackage(pkg: String): AppRule {
-        val direct = getAllRules().firstOrNull { it.packageName == pkg }
-        if (direct != null) return direct
-        if (pkg.contains("apps.bard") || pkg.contains("apps.gemini")) {
+        if (isGeminiOrAiPackage(pkg)) {
             return AppRule(pkg, "Google Gemini", "🤖", isStudyBlocked = true, sessionLimitMinutes = 0, warnAfter9Pm = true)
         }
+        val direct = getAllRules().firstOrNull { it.packageName == pkg }
+        if (direct != null) return direct
         return AppRule(pkg, formatUnknownPackage(pkg), "📱", isStudyBlocked = true, sessionLimitMinutes = 0, warnAfter9Pm = false)
     }
 
@@ -112,12 +125,29 @@ class UsageLimitManager(private val context: Context) {
     }
 
     fun isLateNightAlertEnabled(pkg: String): Boolean {
-        val rule = getAllRules().firstOrNull { it.packageName == pkg }
-        if (rule != null) return rule.warnAfter9Pm
-        if (pkg.contains("apps.bard") || pkg.contains("apps.gemini")) {
+        if (isGeminiOrAiPackage(pkg)) {
             return true
         }
-        return false
+        val rule = getAllRules().firstOrNull { it.packageName == pkg }
+        if (rule != null) {
+            return rule.warnAfter9Pm || rule.isStudyBlocked || rule.sessionLimitMinutes > 0
+        }
+        val lower = pkg.lowercase()
+        return lower.contains("youtube") || lower.contains("tiktok") || 
+               lower.contains("instagram") || lower.contains("reddit") || 
+               lower.contains("twitter") || lower.contains("netflix") || 
+               lower.contains("twitch") || lower.contains("discord") || 
+               lower.contains("snapchat") || lower.contains("chrome")
+    }
+
+    fun simulateBedtimeForTesting(durationSeconds: Int = 120) {
+        val until = System.currentTimeMillis() + (durationSeconds * 1000L)
+        prefs.edit().putLong("bedtime_test_simulation_until", until).apply()
+    }
+
+    fun isBedtimeTestingActive(): Boolean {
+        val until = prefs.getLong("bedtime_test_simulation_until", 0L)
+        return System.currentTimeMillis() < until
     }
 
     fun getSessionLimitForPackage(pkg: String): Int {
