@@ -68,6 +68,8 @@ class MainActivity : AppCompatActivity(), SyncClient.SyncCallback {
 
         // Schedule daily morning motivational quote reminder at 07:00 AM
         DailyReminderReceiver.scheduleDailyAlarm(this, 7, 0)
+        // Schedule 9:00 PM Bedtime Lock reminder and guardian activation
+        DailyReminderReceiver.scheduleBedtimeAlarm(this, 21, 0)
     }
 
     override fun onResume() {
@@ -76,6 +78,7 @@ class MainActivity : AppCompatActivity(), SyncClient.SyncCallback {
         binding.switchGuardianToggle.isChecked = prefs.getBoolean(KEY_GUARDIAN_ENABLED, true)
         updatePermissionBadges()
         updateUsageLimitsUI()
+        updateBedtimeStatusUI()
         startGuardianServiceIfPermitted()
         checkAppUpdates()
     }
@@ -211,6 +214,73 @@ class MainActivity : AppCompatActivity(), SyncClient.SyncCallback {
         binding.btnTestQuote.setOnClickListener {
             DailyReminderReceiver.showDailyQuoteNotification(this)
             Toast.makeText(this, "⚡ Morning fuel notification posted!", Toast.LENGTH_SHORT).show()
+        }
+
+        binding.btnBatteryOptHelp.setOnClickListener {
+            val pm = getSystemService(Context.POWER_SERVICE) as? android.os.PowerManager
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M && pm != null) {
+                if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+                    try {
+                        val intent = Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS).apply {
+                            data = Uri.parse("package:$packageName")
+                        }
+                        startActivity(intent)
+                    } catch (e: Exception) {
+                        try {
+                            startActivity(Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS))
+                        } catch (e2: Exception) {
+                            Toast.makeText(this, "Please allow Unrestricted battery in App Settings", Toast.LENGTH_LONG).show()
+                        }
+                    }
+                } else {
+                    Toast.makeText(this, "✅ Battery optimization is already unrestricted!", Toast.LENGTH_SHORT).show()
+                }
+            } else {
+                Toast.makeText(this, "Battery is managed normally by Android.", Toast.LENGTH_SHORT).show()
+            }
+        }
+
+        binding.btnTestBedtime.setOnClickListener {
+            val hasUsage = FocusBlockerService.hasUsageStatsPermission(this)
+            val hasOverlay = FocusBlockerService.hasOverlayPermission(this)
+            if (!hasUsage || !hasOverlay) {
+                Toast.makeText(this, "Please enable Usage Access and Display Over Other Apps first!", Toast.LENGTH_LONG).show()
+                return@setOnClickListener
+            }
+
+            // Ensure guardian is running
+            startGuardianServiceIfPermitted()
+
+            Toast.makeText(
+                this,
+                "⏳ 5s countdown: Open Gemini or any blocked app right now to test the 9 PM lock!",
+                Toast.LENGTH_LONG
+            ).show()
+
+            binding.btnTestBedtime.isEnabled = false
+            binding.btnTestBedtime.text = "Testing..."
+
+            // Give user 5s to open Gemini or another app, then activate 2-minute bedtime simulation
+            android.os.Handler(android.os.Looper.getMainLooper()).postDelayed({
+                usageLimitManager.simulateBedtimeForTesting(120)
+                updateBedtimeStatusUI()
+
+                // Wake guardian service immediately
+                val serviceIntent = Intent(this, FocusBlockerService::class.java).apply {
+                    action = FocusBlockerService.ACTION_START_GUARD
+                }
+                try {
+                    ContextCompat.startForegroundService(this, serviceIntent)
+                } catch (e: Exception) { }
+
+                binding.btnTestBedtime.isEnabled = true
+                binding.btnTestBedtime.text = "Test (5s)"
+                Toast.makeText(
+                    this,
+                    "🌙 9 PM Bedtime Simulation active for 2 mins! Gemini will be closed immediately.",
+                    Toast.LENGTH_LONG
+                ).show()
+            }, 5000L)
         }
 
         binding.btnStartSession.setOnClickListener {
@@ -477,6 +547,17 @@ What FocusFlow NEVER does:
             }
             .setNegativeButton(if (onProceed != null) "Cancel" else null, null)
             .show()
+    }
+
+    private fun updateBedtimeStatusUI() {
+        val isLateNight = usageLimitManager.isBedtimeTestingActive() || java.util.Calendar.getInstance().get(java.util.Calendar.HOUR_OF_DAY).let { it >= 21 || it < 5 }
+        if (isLateNight) {
+            binding.tvBedtimeStatus.text = "🌙 Bedtime Active Now • Gemini & apps blocked"
+            binding.tvBedtimeStatus.setTextColor(ContextCompat.getColor(this, R.color.accent_rose))
+        } else {
+            binding.tvBedtimeStatus.text = "Active 21:00 - 05:00 • Gemini & apps locked"
+            binding.tvBedtimeStatus.setTextColor(ContextCompat.getColor(this, R.color.text_muted))
+        }
     }
 
     private fun updateUsageLimitsUI() {
