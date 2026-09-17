@@ -218,10 +218,10 @@ def get_version():
     apk_path = get_apk_path()
     size_mb = f"{os.path.getsize(apk_path) / (1024 * 1024):.1f} MB" if (apk_path and os.path.exists(apk_path)) else "6.2 MB"
     return jsonify({
-        "versionCode": 9,
-        "versionName": "1.0.8",
+        "versionCode": 10,
+        "versionName": "1.0.9",
         "downloadUrl": "/download",
-        "releaseNotes": "PC App Complete Modern UI Redesign, 3-Milestone Exam Tracking (Opens, Target, Closes), Moodle companion event detection",
+        "releaseNotes": "🌙 9:00 PM Bedtime Lock: Reliable Gemini & distracting app blocking, persistent guardian service, and instant in-app test simulation",
         "apkSize": size_mb,
         "minSupportedVersion": 1
     })
