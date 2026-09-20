@@ -54,7 +54,7 @@ class BlockerOverlayActivity : AppCompatActivity() {
                 binding.tvHeaderIcon.text = "⏳"
                 binding.tvOverlayTitle.text = "SESSION LIMIT REACHED"
                 binding.tvBlockedAppNotice.text =
-                    "FocusFlow closed $blockedAppName because your sitting limit of ${limitMinutes}m was reached. Take a 3-minute break before your next session!"
+                    "FocusFlow closed $blockedAppName because your sitting limit of ${limitMinutes}m was reached. Take a 15-minute break before your next session!"
                 binding.tvOverlaySubject.text = "Continuous Sitting Guard"
                 binding.tvOverlayTimer.visibility = View.GONE
                 binding.btnBackToFocus.text = "Take a Break (Home)"
