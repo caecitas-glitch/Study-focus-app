@@ -8,6 +8,7 @@ import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.focusflow.companion.MainActivity
 import com.focusflow.companion.databinding.ActivityBlockerOverlayBinding
+import com.focusflow.companion.services.FocusBlockerService
 import com.focusflow.companion.services.UsageLimitManager
 import com.focusflow.companion.workers.QuoteBank
 
@@ -46,7 +47,7 @@ class BlockerOverlayActivity : AppCompatActivity() {
                 binding.tvOverlaySubject.text = "🌙 Late-Night Wind-Down"
                 binding.tvOverlayTimer.visibility = View.GONE
                 binding.btnBackToFocus.text = "Put Phone Away (Home)"
-                binding.btnQuickExtension.text = "+5m Wind Down"
+                binding.btnQuickExtension.text = "+15m Extension"
                 binding.layoutBypassOptions.visibility = View.VISIBLE
             }
             REASON_SESSION_LIMIT, REASON_DAILY_LIMIT -> {
@@ -80,22 +81,40 @@ class BlockerOverlayActivity : AppCompatActivity() {
 
         binding.tvOverlayQuote.text = QuoteBank.formatQuote()
 
-        // Quick extension bypass (+5m for bedtime, +15m for limits)
+        // Quick 15-minute extension bypass
         binding.btnQuickExtension.setOnClickListener {
-            val snoozeMins = if (reason == REASON_BEDTIME) 5 else 15
+            val extensionMins = 15
             if (rawPkg.isNotEmpty()) {
-                usageLimitManager.addBonusMinutes(rawPkg, snoozeMins)
+                usageLimitManager.extendAppUsage(rawPkg, extensionMins)
+                val extendIntent = Intent(this, FocusBlockerService::class.java).apply {
+                    action = FocusBlockerService.ACTION_EXTEND_SESSION
+                    putExtra(FocusBlockerService.EXTRA_RAW_PACKAGE, rawPkg)
+                    putExtra(FocusBlockerService.EXTRA_EXTENSION_MINUTES, extensionMins)
+                }
+                try {
+                    startService(extendIntent)
+                } catch (e: Exception) { }
+            } else {
+                usageLimitManager.snoozeBedtime(extensionMins)
             }
-            if (reason == REASON_BEDTIME) {
-                usageLimitManager.snoozeBedtime(snoozeMins)
-            }
-            Toast.makeText(this, "⚡ Granted +${snoozeMins}m extension for $blockedAppName", Toast.LENGTH_SHORT).show()
+            Toast.makeText(this, "⚡ Granted +15m extension for $blockedAppName", Toast.LENGTH_SHORT).show()
             finish()
         }
 
         // 2-Hour Relax / Leisure Mode bypass
         binding.btnLeisureMode.setOnClickListener {
             usageLimitManager.enableLeisureMode(2)
+            if (rawPkg.isNotEmpty()) {
+                usageLimitManager.extendAppUsage(rawPkg, 120)
+                val extendIntent = Intent(this, FocusBlockerService::class.java).apply {
+                    action = FocusBlockerService.ACTION_EXTEND_SESSION
+                    putExtra(FocusBlockerService.EXTRA_RAW_PACKAGE, rawPkg)
+                    putExtra(FocusBlockerService.EXTRA_EXTENSION_MINUTES, 120)
+                }
+                try {
+                    startService(extendIntent)
+                } catch (e: Exception) { }
+            }
             Toast.makeText(this, "🛋️ Relax Mode activated for 2 hours. App limits paused!", Toast.LENGTH_LONG).show()
             finish()
         }
