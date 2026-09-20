@@ -86,26 +86,37 @@ class FocusBlockerService : Service() {
             val now = System.currentTimeMillis()
 
             if (currentPkg != null && currentPkg != packageName) {
+                val hasExtension = usageLimitManager.isPackageExtensionActive(currentPkg)
+                val isLeisure = usageLimitManager.isLeisureModeActive()
+
+                // If this package currently has an active extension, keep its timer fresh
+                if (hasExtension) {
+                    packageSessionStartTimes[currentPkg] = now
+                    packageLastExitTimes[currentPkg] = 0L
+                }
+
                 // 1. Check Late-Night Wind-Down Warning (e.g. Gemini after 9:00 PM)
                 if (isLateNightHour() && usageLimitManager.isLateNightAlertEnabled(currentPkg)) {
-                    if (!usageLimitManager.isBedtimeSnoozed() && !usageLimitManager.isLeisureModeActive()) {
+                    if (!usageLimitManager.isBedtimeSnoozed() && !hasExtension && !isLeisure) {
                         if (now - lastActionTimestamp > 2500) {
                             lastActionTimestamp = now
                             showLateNightBedtimeAlert(currentPkg)
+                            // If bedtime alert was just triggered, avoid double-firing session limit in same tick
+                            return
                         }
                     }
                 }
 
                 // 2. Active Study Session Blocking
                 if (isSessionActive && usageLimitManager.isStudyBlocked(currentPkg)) {
-                    if (now - lastActionTimestamp > 2500) {
+                    if (!hasExtension && !isLeisure && (now - lastActionTimestamp > 2500)) {
                         lastActionTimestamp = now
                         forceCloseAndExplain(currentPkg, BlockerOverlayActivity.REASON_STUDY_SESSION)
                     }
-                } else {
+                } else if (!hasExtension && !isLeisure) {
                     // 3. Per-Session Continuous Usage Limit Check (e.g. 1m, 15m, 20m, 30m sitting limit)
                     val sessionLimit = usageLimitManager.getSessionLimitForPackage(currentPkg)
-                    if (sessionLimit > 0 && !usageLimitManager.isLeisureModeActive()) {
+                    if (sessionLimit > 0) {
                         val lastExit = packageLastExitTimes[currentPkg] ?: 0L
                         val cooldownMs = UsageLimitManager.SESSION_COOLDOWN_MINUTES * 60 * 1000L
 
@@ -225,6 +236,16 @@ class FocusBlockerService : Service() {
                 dndManager.restoreNotifications()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 stopSelf()
+            }
+            ACTION_EXTEND_SESSION -> {
+                val pkg = intent?.getStringExtra(EXTRA_RAW_PACKAGE)
+                if (!pkg.isNullOrEmpty()) {
+                    val now = System.currentTimeMillis()
+                    packageSessionStartTimes[pkg] = now
+                    packageLastExitTimes[pkg] = 0L
+                    activeMonitoredPackage = null
+                    lastActionTimestamp = now
+                }
             }
         }
 
@@ -649,9 +670,12 @@ class FocusBlockerService : Service() {
         const val ACTION_START_GUARD = "com.focusflow.action.START_GUARD"
         const val ACTION_STOP_ALL = "com.focusflow.action.STOP_ALL"
         const val ACTION_UPDATE_TIMER = "com.focusflow.action.UPDATE_TIMER"
+        const val ACTION_EXTEND_SESSION = "com.focusflow.action.EXTEND_SESSION"
 
         const val EXTRA_SUBJECT = "extra_subject"
         const val EXTRA_REMAINING_SEC = "extra_remaining_sec"
+        const val EXTRA_RAW_PACKAGE = "extra_raw_package"
+        const val EXTRA_EXTENSION_MINUTES = "extra_extension_minutes"
 
         private const val BEDTIME_THROTTLE_MS = 300_000L // 5 minutes between bedtime warnings
 
