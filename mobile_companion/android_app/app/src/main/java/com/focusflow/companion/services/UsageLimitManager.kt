@@ -33,8 +33,8 @@ class UsageLimitManager(private val context: Context) {
         private const val KEY_BEDTIME_SNOOZE_UNTIL = "bedtime_snooze_until_timestamp"
         private const val KEY_CUSTOM_RULES_JSON = "custom_rules_json_v3"
 
-        // Cooldown required between sessions in minutes (e.g. step away for 3 minutes before allowance resets)
-        const val SESSION_COOLDOWN_MINUTES = 3
+        // Cooldown required between sessions in minutes (must take a real 15-minute break before allowance resets)
+        const val SESSION_COOLDOWN_MINUTES = 15
 
         val DEFAULT_RULES = listOf(
             AppRule("com.google.android.youtube", "YouTube", "📺", isStudyBlocked = true, sessionLimitMinutes = 20, warnAfter9Pm = true),
@@ -214,12 +214,61 @@ class UsageLimitManager(private val context: Context) {
 
     fun extendAppUsage(pkg: String, minutes: Int = 15) {
         setPackageExtensionUntil(pkg, minutes)
+        resetPackageSessionElapsed(pkg)
+        setPackageLastActiveTime(pkg, System.currentTimeMillis())
         if (isGeminiOrAiPackage(pkg)) {
             setPackageExtensionUntil("com.google.android.apps.bard", minutes)
             setPackageExtensionUntil("com.google.android.googlequicksearchbox", minutes)
+            resetPackageSessionElapsed("com.google.android.apps.bard")
+            resetPackageSessionElapsed("com.google.android.googlequicksearchbox")
         }
         snoozeBedtime(minutes)
         addBonusMinutes(pkg, minutes)
+    }
+
+    fun getPackageSessionElapsed(pkg: String): Long {
+        val ms = getPackageSessionElapsedMs(pkg)
+        return if (ms > 0L) ms / 1000L else prefs.getLong("session_elapsed_sec_$pkg", 0L)
+    }
+
+    fun getPackageSessionElapsedMs(pkg: String): Long {
+        return prefs.getLong("session_elapsed_ms_$pkg", 0L)
+    }
+
+    fun setPackageSessionElapsed(pkg: String, seconds: Long) {
+        prefs.edit()
+            .putLong("session_elapsed_sec_$pkg", seconds)
+            .putLong("session_elapsed_ms_$pkg", seconds * 1000L)
+            .apply()
+    }
+
+    fun addPackageSessionElapsedMs(pkg: String, deltaMs: Long): Long {
+        val current = getPackageSessionElapsedMs(pkg)
+        val updated = current + deltaMs
+        prefs.edit()
+            .putLong("session_elapsed_ms_$pkg", updated)
+            .putLong("session_elapsed_sec_$pkg", updated / 1000L)
+            .apply()
+        return updated
+    }
+
+    fun incrementPackageSessionElapsed(pkg: String, secondsToAdd: Long = 1L): Long {
+        return addPackageSessionElapsedMs(pkg, secondsToAdd * 1000L) / 1000L
+    }
+
+    fun resetPackageSessionElapsed(pkg: String) {
+        prefs.edit()
+            .putLong("session_elapsed_sec_$pkg", 0L)
+            .putLong("session_elapsed_ms_$pkg", 0L)
+            .apply()
+    }
+
+    fun getPackageLastActiveTime(pkg: String): Long {
+        return prefs.getLong("last_active_time_$pkg", 0L)
+    }
+
+    fun setPackageLastActiveTime(pkg: String, timestamp: Long = System.currentTimeMillis()) {
+        prefs.edit().putLong("last_active_time_$pkg", timestamp).apply()
     }
 
     fun getTodayUsageMinutes(pkg: String): Int {
