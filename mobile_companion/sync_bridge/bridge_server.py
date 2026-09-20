@@ -218,10 +218,10 @@ def get_version():
     apk_path = get_apk_path()
     size_mb = f"{os.path.getsize(apk_path) / (1024 * 1024):.1f} MB" if (apk_path and os.path.exists(apk_path)) else "6.2 MB"
     return jsonify({
-        "versionCode": 11,
-        "versionName": "1.1.0",
+        "versionCode": 12,
+        "versionName": "1.1.1",
         "downloadUrl": "/download",
-        "releaseNotes": "🌙 +15m Extension Fix: Guarantees 15 minutes of uninterrupted use after 9 PM without repeating limit warnings",
+        "releaseNotes": "⏱️ Persistent Continuous Timer: Prevents timer reset by closing/reopening distracting apps; enforces 15-minute break cooldown.",
         "apkSize": size_mb,
         "minSupportedVersion": 1
     })
