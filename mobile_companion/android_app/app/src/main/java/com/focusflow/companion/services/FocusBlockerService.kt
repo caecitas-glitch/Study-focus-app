@@ -55,7 +55,9 @@ class FocusBlockerService : Service() {
                     // Screen turned dark / phone in pocket or nightstand
                     isScreenOn = false
                     if (activeMonitoredPackage != null) {
-                        packageLastExitTimes[activeMonitoredPackage!!] = System.currentTimeMillis()
+                        val now = System.currentTimeMillis()
+                        usageLimitManager.setPackageLastActiveTime(activeMonitoredPackage!!, now)
+                        packageLastExitTimes[activeMonitoredPackage!!] = now
                         activeMonitoredPackage = null
                     }
                 }
@@ -91,6 +93,8 @@ class FocusBlockerService : Service() {
 
                 // If this package currently has an active extension, keep its timer fresh
                 if (hasExtension) {
+                    usageLimitManager.resetPackageSessionElapsed(currentPkg)
+                    usageLimitManager.setPackageLastActiveTime(currentPkg, now)
                     packageSessionStartTimes[currentPkg] = now
                     packageLastExitTimes[currentPkg] = 0L
                 }
@@ -117,27 +121,25 @@ class FocusBlockerService : Service() {
                     // 3. Per-Session Continuous Usage Limit Check (e.g. 1m, 15m, 20m, 30m sitting limit)
                     val sessionLimit = usageLimitManager.getSessionLimitForPackage(currentPkg)
                     if (sessionLimit > 0) {
-                        val lastExit = packageLastExitTimes[currentPkg] ?: 0L
+                        val lastActive = usageLimitManager.getPackageLastActiveTime(currentPkg)
                         val cooldownMs = UsageLimitManager.SESSION_COOLDOWN_MINUTES * 60 * 1000L
 
-                        if (now - lastExit > cooldownMs) {
-                            // User took a full break -> fresh session timer
-                            if (currentPkg != activeMonitoredPackage || !packageSessionStartTimes.containsKey(currentPkg)) {
-                                packageSessionStartTimes[currentPkg] = now
-                            }
-                        } else {
-                            // Re-entered within cooldown -> continue same session
-                            if (!packageSessionStartTimes.containsKey(currentPkg)) {
-                                packageSessionStartTimes[currentPkg] = now
-                            }
+                        if (lastActive == 0L || (now - lastActive > cooldownMs)) {
+                            // User took a full break (or first launch) -> reset to fresh session
+                            usageLimitManager.resetPackageSessionElapsed(currentPkg)
+                            packageSessionStartTimes[currentPkg] = now
+                        } else if (activeMonitoredPackage == currentPkg) {
+                            // Active continuous usage in currentPkg: add elapsed delta
+                            val deltaMs = (now - lastActive).coerceIn(0L, 5000L)
+                            usageLimitManager.addPackageSessionElapsedMs(currentPkg, deltaMs)
                         }
+                        // Update last active time for currentPkg
+                        usageLimitManager.setPackageLastActiveTime(currentPkg, now)
 
-                        activeMonitoredPackage = currentPkg
-                        val sessionStart = packageSessionStartTimes[currentPkg] ?: now
                         val bonusMinutes = usageLimitManager.getBonusMinutesForToday(currentPkg)
                         val totalAllowedMins = sessionLimit + bonusMinutes
                         val totalAllowedSec = totalAllowedMins * 60L
-                        val elapsedSec = (now - sessionStart) / 1000L
+                        val elapsedSec = usageLimitManager.getPackageSessionElapsed(currentPkg)
 
                         if (elapsedSec >= totalAllowedSec) {
                             if (now - lastActionTimestamp > 2500) {
@@ -149,11 +151,13 @@ class FocusBlockerService : Service() {
                 }
 
                 if (activeMonitoredPackage != null && activeMonitoredPackage != currentPkg) {
+                    usageLimitManager.setPackageLastActiveTime(activeMonitoredPackage!!, now)
                     packageLastExitTimes[activeMonitoredPackage!!] = now
-                    activeMonitoredPackage = null
                 }
+                activeMonitoredPackage = currentPkg
             } else {
                 if (activeMonitoredPackage != null) {
+                    usageLimitManager.setPackageLastActiveTime(activeMonitoredPackage!!, now)
                     packageLastExitTimes[activeMonitoredPackage!!] = now
                     activeMonitoredPackage = null
                 }
@@ -241,6 +245,8 @@ class FocusBlockerService : Service() {
                 val pkg = intent?.getStringExtra(EXTRA_RAW_PACKAGE)
                 if (!pkg.isNullOrEmpty()) {
                     val now = System.currentTimeMillis()
+                    usageLimitManager.resetPackageSessionElapsed(pkg)
+                    usageLimitManager.setPackageLastActiveTime(pkg, now)
                     packageSessionStartTimes[pkg] = now
                     packageLastExitTimes[pkg] = 0L
                     activeMonitoredPackage = null
@@ -377,17 +383,19 @@ class FocusBlockerService : Service() {
         val appName = formatPackageName(pkg)
 
         // Clear active monitored package and record exit
-        packageLastExitTimes[pkg] = System.currentTimeMillis()
+        val now = System.currentTimeMillis()
+        usageLimitManager.setPackageLastActiveTime(pkg, now)
+        packageLastExitTimes[pkg] = now
         activeMonitoredPackage = null
 
         val explanation = when (reason) {
             BlockerOverlayActivity.REASON_SESSION_LIMIT -> {
                 val limit = usageLimitManager.getSessionLimitForPackage(pkg)
-                "FocusFlow closed $appName: Session limit of ${limit}m reached. Take a 3-minute break!"
+                "FocusFlow closed $appName: Session limit of ${limit}m reached. Take a 15-minute break!"
             }
             BlockerOverlayActivity.REASON_DAILY_LIMIT -> {
                 val limit = usageLimitManager.getLimitForPackage(pkg)
-                "FocusFlow closed $appName: Limit of ${limit}m reached. Take a break!"
+                "FocusFlow closed $appName: Limit of ${limit}m reached. Take a 15-minute break!"
             }
             else -> {
                 val mins = remainingSeconds / 60
