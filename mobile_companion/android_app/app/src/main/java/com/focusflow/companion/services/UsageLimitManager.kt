@@ -192,7 +192,7 @@ class UsageLimitManager(private val context: Context) {
         prefs.edit().putLong(KEY_LEISURE_UNTIL, 0L).apply()
     }
 
-    fun snoozeBedtime(minutes: Int = 5) {
+    fun snoozeBedtime(minutes: Int = 15) {
         val until = System.currentTimeMillis() + (minutes * 60 * 1000L)
         prefs.edit().putLong(KEY_BEDTIME_SNOOZE_UNTIL, until).apply()
     }
@@ -200,6 +200,26 @@ class UsageLimitManager(private val context: Context) {
     fun isBedtimeSnoozed(): Boolean {
         val until = prefs.getLong(KEY_BEDTIME_SNOOZE_UNTIL, 0L)
         return System.currentTimeMillis() < until
+    }
+
+    fun setPackageExtensionUntil(pkg: String, minutes: Int = 15) {
+        val until = System.currentTimeMillis() + (minutes * 60 * 1000L)
+        prefs.edit().putLong("extension_until_$pkg", until).apply()
+    }
+
+    fun isPackageExtensionActive(pkg: String): Boolean {
+        val until = prefs.getLong("extension_until_$pkg", 0L)
+        return System.currentTimeMillis() < until
+    }
+
+    fun extendAppUsage(pkg: String, minutes: Int = 15) {
+        setPackageExtensionUntil(pkg, minutes)
+        if (isGeminiOrAiPackage(pkg)) {
+            setPackageExtensionUntil("com.google.android.apps.bard", minutes)
+            setPackageExtensionUntil("com.google.android.googlequicksearchbox", minutes)
+        }
+        snoozeBedtime(minutes)
+        addBonusMinutes(pkg, minutes)
     }
 
     fun getTodayUsageMinutes(pkg: String): Int {
