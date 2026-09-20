@@ -218,10 +218,10 @@ def get_version():
     apk_path = get_apk_path()
     size_mb = f"{os.path.getsize(apk_path) / (1024 * 1024):.1f} MB" if (apk_path and os.path.exists(apk_path)) else "6.2 MB"
     return jsonify({
-        "versionCode": 10,
-        "versionName": "1.0.9",
+        "versionCode": 11,
+        "versionName": "1.1.0",
         "downloadUrl": "/download",
-        "releaseNotes": "🌙 9:00 PM Bedtime Lock: Reliable Gemini & distracting app blocking, persistent guardian service, and instant in-app test simulation",
+        "releaseNotes": "🌙 +15m Extension Fix: Guarantees 15 minutes of uninterrupted use after 9 PM without repeating limit warnings",
         "apkSize": size_mb,
         "minSupportedVersion": 1
     })
