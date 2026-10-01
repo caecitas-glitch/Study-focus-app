@@ -120,7 +120,7 @@ class DailyReminderReceiver : BroadcastReceiver() {
         fun showDailyQuoteNotification(context: Context) {
             createNotificationChannel(context)
 
-            val (quote, author) = QuoteBank.getRandomQuote()
+            val (quote, author) = QuoteBank.getNotificationText()
 
             val openIntent = Intent(context, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -132,9 +132,9 @@ class DailyReminderReceiver : BroadcastReceiver() {
 
             val notification = NotificationCompat.Builder(context, CHANNEL_ID)
                 .setSmallIcon(android.R.drawable.ic_dialog_info)
-                .setContentTitle("FocusFlow • Morning Fuel ⚡")
+                .setContentTitle("FocusFlow • Morning Fuel")
                 .setContentText("\"$quote\" — $author")
-                .setStyle(NotificationCompat.BigTextStyle().bigText("\"$quote\"\n\n— $author\n\nRise and grind. Conquer today."))
+                .setStyle(NotificationCompat.BigTextStyle().bigText("\"$quote\"\n\n— $author\n\nRise and grind. Lock in today."))
                 .setPriority(NotificationCompat.PRIORITY_DEFAULT)
                 .setAutoCancel(true)
                 .setContentIntent(pendingIntent)
