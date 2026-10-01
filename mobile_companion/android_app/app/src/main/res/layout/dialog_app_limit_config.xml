@@ -59,7 +59,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:checked="true"
-        android:text="🚫 Block during Study Sessions"
+        android:text="Block during Study Sessions"
         android:textColor="@color/text_main"
         android:textSize="14sp" />
 
@@ -69,7 +69,7 @@
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="8dp"
-        android:text="🌙 Warn if used after 9:00 PM"
+        android:text="Late Night Lock (Warn after 9:00 PM)"
         android:textColor="@color/text_main"
         android:textSize="14sp" />
 
