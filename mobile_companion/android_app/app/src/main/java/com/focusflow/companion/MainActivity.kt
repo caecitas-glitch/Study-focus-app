@@ -31,6 +31,9 @@ import com.focusflow.companion.services.UsageLimitManager
 import com.focusflow.companion.sync.ActiveSession
 import com.focusflow.companion.sync.FocusStatusResponse
 import com.focusflow.companion.sync.SyncClient
+import com.focusflow.companion.services.SchoolScheduleManager
+import com.focusflow.companion.sync.Deadline
+import android.content.res.ColorStateList
 import com.focusflow.companion.updater.AppUpdateManager
 import com.focusflow.companion.updater.UpdateInfo
 import com.focusflow.companion.workers.DailyReminderReceiver
@@ -44,12 +47,14 @@ class MainActivity : AppCompatActivity(), SyncClient.SyncCallback {
     private lateinit var syncClient: SyncClient
     private lateinit var usageLimitManager: UsageLimitManager
     private lateinit var appUpdateManager: AppUpdateManager
+    private lateinit var schoolScheduleManager: SchoolScheduleManager
 
     private var currentSession: ActiveSession? = null
     private var selectedSubject: String = "#General Study"
     private var selectedDurationMinutes: Int = 30
     private val universityTags = mutableListOf<String>()
     private var pendingUpdateInfo: UpdateInfo? = null
+    private var cachedDeadlines = listOf<Deadline>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -60,10 +65,13 @@ class MainActivity : AppCompatActivity(), SyncClient.SyncCallback {
         syncClient = SyncClient(this)
         usageLimitManager = UsageLimitManager(this)
         appUpdateManager = AppUpdateManager(this)
+        schoolScheduleManager = SchoolScheduleManager(this)
 
+        setupTabs()
         setupPrefsAndIp()
         setupListeners()
         setupDurationListeners()
+        setupSchoolScheduleUI()
         requestNotificationPermission()
 
         // Schedule daily morning motivational quote reminder at 07:00 AM
@@ -126,6 +134,123 @@ class MainActivity : AppCompatActivity(), SyncClient.SyncCallback {
         binding.tvSessionSubject.text = selectedSubject
         binding.tvTimerCountdown.text = String.format("%02d:00", selectedDurationMinutes)
         binding.btnStartSession.text = "Start ${selectedDurationMinutes}m Focus"
+    }
+
+    private fun setupTabs() {
+        val tabBtns = listOf(binding.tabBtnFocus, binding.tabBtnSchool, binding.tabBtnGuard)
+        val containers = listOf(binding.layoutTabFocus, binding.layoutTabSchool, binding.layoutTabGuard)
+        val icons = listOf(binding.ivTabFocus, binding.ivTabSchool, binding.ivTabGuard)
+        val texts = listOf(binding.tvTabFocus, binding.tvTabSchool, binding.tvTabGuard)
+
+        fun selectTab(index: Int) {
+            for (i in containers.indices) {
+                val isActive = (i == index)
+                containers[i].visibility = if (isActive) View.VISIBLE else View.GONE
+                tabBtns[i].setBackgroundResource(if (isActive) R.drawable.card_highlight_bg else android.R.color.transparent)
+                icons[i].imageTintList = ColorStateList.valueOf(
+                    ContextCompat.getColor(this, if (isActive) R.color.accent_primary else R.color.text_muted)
+                )
+                texts[i].setTextColor(
+                    ContextCompat.getColor(this, if (isActive) R.color.text_main else R.color.text_muted)
+                )
+            }
+        }
+
+        binding.tabBtnFocus.setOnClickListener { selectTab(0) }
+        binding.tabBtnSchool.setOnClickListener { selectTab(1) }
+        binding.tabBtnGuard.setOnClickListener { selectTab(2) }
+
+        // Start with PC Bridge card collapsed if IP already saved
+        val savedIp = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE).getString(KEY_BRIDGE_IP, "")
+        if (!savedIp.isNullOrEmpty()) {
+            binding.cardBridgeIp.visibility = View.GONE
+        }
+
+        binding.btnToggleBridgeSheet.setOnClickListener {
+            binding.cardBridgeIp.visibility = if (binding.cardBridgeIp.visibility == View.VISIBLE) View.GONE else View.VISIBLE
+        }
+    }
+
+    private fun setupSchoolScheduleUI() {
+        binding.etSchoolIcalUrl.setText(schoolScheduleManager.getSchoolIcalUrl())
+
+        binding.btnSaveSchoolIcal.setOnClickListener {
+            val url = binding.etSchoolIcalUrl.text.toString().trim()
+            schoolScheduleManager.setSchoolIcalUrl(url)
+            Toast.makeText(this, "iCal URL saved", Toast.LENGTH_SHORT).show()
+            refreshSchoolSchedule()
+        }
+
+        binding.btnRefreshSchoolIcal.setOnClickListener {
+            refreshSchoolSchedule()
+        }
+
+        binding.btnMarkSchoolAttended.setOnClickListener {
+            handleMarkSchoolAttended()
+        }
+
+        refreshSchoolSchedule()
+    }
+
+    private fun refreshSchoolSchedule() {
+        lifecycleScope.launch {
+            binding.btnRefreshSchoolIcal.isEnabled = false
+            val status = schoolScheduleManager.fetchTodaySchoolSchedule(cachedDeadlines)
+            binding.btnRefreshSchoolIcal.isEnabled = true
+
+            val hours = status.scheduledMinutes / 60
+            val mins = status.scheduledMinutes % 60
+            binding.tvSchoolTodayHours.text = "Today's Schedule: ${hours}h ${mins}m (${status.eventCount} classes)"
+            binding.pbSchoolHours.progress = status.scheduledMinutes.coerceAtMost(330)
+
+            if (status.hasImminentDeadline) {
+                binding.cardDeadlineWarning.visibility = View.VISIBLE
+                val deadlineTitle = status.imminentDeadlineName ?: "Exam/Assignment"
+                binding.tvDeadlineWarningText.text = "Upcoming deadline: '$deadlineTitle' in ${status.daysUntilDeadline}d. Attendance upkeep blocked — focus session required!"
+                binding.btnMarkSchoolAttended.isEnabled = false
+                binding.btnMarkSchoolAttended.text = "Focus Session Required"
+                binding.tvSchoolAttendanceStatus.text = "Cannot mark school attendance when an exam/deadline is within 5 days."
+            } else if (status.alreadyMarkedToday) {
+                binding.cardDeadlineWarning.visibility = View.GONE
+                binding.btnMarkSchoolAttended.isEnabled = false
+                binding.btnMarkSchoolAttended.text = "✓ School Attended Today"
+                binding.tvSchoolAttendanceStatus.text = "Streak maintained for today!"
+            } else if (status.qualifiesForAttendance) {
+                binding.cardDeadlineWarning.visibility = View.GONE
+                binding.btnMarkSchoolAttended.isEnabled = true
+                binding.btnMarkSchoolAttended.text = "Mark Attended School (5.5h+)"
+                binding.tvSchoolAttendanceStatus.text = "5.5h+ verified! Tap to upkeep your streak."
+            } else {
+                binding.cardDeadlineWarning.visibility = View.GONE
+                binding.btnMarkSchoolAttended.isEnabled = false
+                binding.btnMarkSchoolAttended.text = "Mark Attended School"
+                binding.tvSchoolAttendanceStatus.text = "Requires 5.5h+ of scheduled classes today (currently ${hours}h ${mins}m)"
+            }
+        }
+    }
+
+    private fun handleMarkSchoolAttended() {
+        val prefs = getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        val currentStreak = prefs.getInt(SchoolScheduleManager.KEY_LOCAL_STREAK, 1)
+        val newStreak = schoolScheduleManager.markSchoolAttended(currentStreak)
+
+        binding.tvStreak.text = "$newStreak Days"
+        binding.btnMarkSchoolAttended.isEnabled = false
+        binding.btnMarkSchoolAttended.text = "✓ School Attended Today"
+        binding.tvSchoolAttendanceStatus.text = "Streak maintained at $newStreak days!"
+
+        // If PC bridge is connected, notify PC bridge to update focus_data.json without adding fake study minutes
+        val ip = binding.etBridgeIp.text.toString().trim()
+        if (ip.isNotEmpty()) {
+            lifecycleScope.launch {
+                val ok = syncClient.markAttendedSchool(ip)
+                if (ok) {
+                    Toast.makeText(this@MainActivity, "🎓 Synced school attendance with PC! Streak: $newStreak", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
+        Toast.makeText(this, "🎓 School attendance recorded! Streak maintained at $newStreak days.", Toast.LENGTH_LONG).show()
     }
 
     private fun setupListeners() {
@@ -767,18 +892,24 @@ What FocusFlow NEVER does:
     override fun onConnectionStatusChanged(isConnected: Boolean, message: String) {
         runOnUiThread {
             if (isConnected) {
-                binding.tvSyncStatus.text = "Synced ✓"
+                binding.tvSyncStatus.text = "Synced"
                 binding.tvSyncStatus.setTextColor(ContextCompat.getColor(this, R.color.accent_emerald))
+                binding.ivSyncIcon.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.accent_emerald))
             } else {
                 binding.tvSyncStatus.text = "Offline"
                 binding.tvSyncStatus.setTextColor(ContextCompat.getColor(this, R.color.accent_rose))
+                binding.ivSyncIcon.imageTintList = ColorStateList.valueOf(ContextCompat.getColor(this, R.color.accent_rose))
             }
         }
     }
 
     override fun onStatusReceived(status: FocusStatusResponse) {
         runOnUiThread {
-            binding.tvStreak.text = "🔥 ${status.streakCount} day${if (status.streakCount == 1) "" else "s"}"
+            binding.tvStreak.text = "${status.streakCount} Day${if (status.streakCount == 1) "" else "s"}"
+            getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+                .edit()
+                .putInt(SchoolScheduleManager.KEY_LOCAL_STREAK, status.streakCount)
+                .apply()
 
             if (status.nextRank != null) {
                 val needed = status.nextRank.threshold - status.rewardTierMinutes
@@ -800,17 +931,20 @@ What FocusFlow NEVER does:
                 }
             }
 
-            // Render upcoming deadlines
+            // Render upcoming deadlines & update school schedule evaluation
+            cachedDeadlines = status.upcomingDeadlines
             if (status.upcomingDeadlines.isNotEmpty()) {
                 val sb = StringBuilder()
-                for ((idx, d) in status.upcomingDeadlines.take(3).withIndex()) {
+                for ((idx, d) in status.upcomingDeadlines.take(4).withIndex()) {
                     sb.append("• ${d.due}: ${d.summary}")
-                    if (idx < 2) sb.append("\n")
+                    if (idx < 3) sb.append("\n")
                 }
                 binding.tvUpcomingDeadlines.text = sb.toString()
             } else {
                 binding.tvUpcomingDeadlines.text = "No pending university deadlines!"
             }
+
+            refreshSchoolSchedule()
 
             status.activeSession?.let { onSessionStateChanged(it) }
         }
