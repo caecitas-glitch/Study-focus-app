@@ -218,10 +218,10 @@ def get_version():
     apk_path = get_apk_path()
     size_mb = f"{os.path.getsize(apk_path) / (1024 * 1024):.1f} MB" if (apk_path and os.path.exists(apk_path)) else "6.2 MB"
     return jsonify({
-        "versionCode": 12,
-        "versionName": "1.1.1",
+        "versionCode": 13,
+        "versionName": "1.2.0",
         "downloadUrl": "/download",
-        "releaseNotes": "⏱️ Persistent Continuous Timer: Prevents timer reset by closing/reopening distracting apps; enforces 15-minute break cooldown.",
+        "releaseNotes": "✨ Modern UI Overhaul: Clean segmented tabs, vector icons, punchy notification-bar quotes, and iCal school attendance streak upkeep (5.5h+ threshold with 5-day deadline guard).",
         "apkSize": size_mb,
         "minSupportedVersion": 1
     })
@@ -335,6 +335,47 @@ def pre_designate():
     }
     save_focus_data(data)
     return jsonify({"success": True, "pre_designated": data["pre_designated_session"]})
+
+@app.route("/api/attend_school", methods=["POST"])
+def attend_school():
+    """Marks school attendance for today (5.5h+ university day). Upkeeps streak without adding fake study minutes."""
+    data = load_focus_data()
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    last_d_str = data.get("last_study_date", "")
+    streak = data.get("streak_count", 0)
+
+    if last_d_str != today_str:
+        if not last_d_str:
+            streak = 1
+        else:
+            try:
+                last_d = datetime.strptime(last_d_str, "%Y-%m-%d").date()
+                today_d = datetime.now().date()
+                cur = last_d + timedelta(days=1)
+                missed_weekdays = 0
+                while cur < today_d:
+                    if cur.weekday() < 5:
+                        missed_weekdays += 1
+                    cur += timedelta(days=1)
+
+                if missed_weekdays == 0 and today_d > last_d:
+                    streak += 1
+                elif missed_weekdays >= 1:
+                    streak = 1
+            except Exception:
+                streak = max(1, streak)
+
+        data["last_study_date"] = today_str
+        data["streak_count"] = streak
+        save_focus_data(data)
+        broadcast_event("streak_updated", {"streak_count": streak, "last_study_date": today_str})
+
+    return jsonify({
+        "success": True,
+        "streak_count": streak,
+        "last_study_date": today_str,
+        "message": f"School attendance logged for {today_str}. Streak upkept at {streak}!"
+    })
 
 @app.route("/api/events", methods=["GET"])
 def sse_events():
