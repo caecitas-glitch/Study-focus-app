@@ -218,10 +218,10 @@ def get_version():
     apk_path = get_apk_path()
     size_mb = f"{os.path.getsize(apk_path) / (1024 * 1024):.1f} MB" if (apk_path and os.path.exists(apk_path)) else "6.2 MB"
     return jsonify({
-        "versionCode": 13,
-        "versionName": "1.2.0",
+        "versionCode": 14,
+        "versionName": "1.2.1",
         "downloadUrl": "/download",
-        "releaseNotes": "✨ Modern UI Overhaul: Clean segmented tabs, vector icons, punchy notification-bar quotes, and iCal school attendance streak upkeep (5.5h+ threshold with 5-day deadline guard).",
+        "releaseNotes": "✨ School Schedule Lunch Count: Automatically incorporates university lunch (11:30–12:30) on school days towards the 5.5h streak upkeep threshold with smart overlap de-duplication.",
         "apkSize": size_mb,
         "minSupportedVersion": 1
     })
