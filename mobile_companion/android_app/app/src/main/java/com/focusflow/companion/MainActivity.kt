@@ -200,7 +200,9 @@ class MainActivity : AppCompatActivity(), SyncClient.SyncCallback {
 
             val hours = status.scheduledMinutes / 60
             val mins = status.scheduledMinutes % 60
-            binding.tvSchoolTodayHours.text = "Today's Schedule: ${hours}h ${mins}m (${status.eventCount} classes)"
+            val lunchBadge = if (status.lunchIncluded) " + lunch" else ""
+            val classText = if (status.eventCount == 1) "1 class" else "${status.eventCount} classes"
+            binding.tvSchoolTodayHours.text = "Today's Schedule: ${hours}h ${mins}m ($classText$lunchBadge)"
             binding.pbSchoolHours.progress = status.scheduledMinutes.coerceAtMost(330)
 
             if (status.hasImminentDeadline) {
@@ -219,12 +221,12 @@ class MainActivity : AppCompatActivity(), SyncClient.SyncCallback {
                 binding.cardDeadlineWarning.visibility = View.GONE
                 binding.btnMarkSchoolAttended.isEnabled = true
                 binding.btnMarkSchoolAttended.text = "Mark Attended School (5.5h+)"
-                binding.tvSchoolAttendanceStatus.text = "5.5h+ verified! Tap to upkeep your streak."
+                binding.tvSchoolAttendanceStatus.text = "5.5h+ verified ($classText$lunchBadge)! Tap to upkeep your streak."
             } else {
                 binding.cardDeadlineWarning.visibility = View.GONE
                 binding.btnMarkSchoolAttended.isEnabled = false
                 binding.btnMarkSchoolAttended.text = "Mark Attended School"
-                binding.tvSchoolAttendanceStatus.text = "Requires 5.5h+ of scheduled classes today (currently ${hours}h ${mins}m)"
+                binding.tvSchoolAttendanceStatus.text = "Requires 5.5h+ of scheduled school today (currently ${hours}h ${mins}m)"
             }
         }
     }
