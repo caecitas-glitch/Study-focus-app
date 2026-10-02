@@ -22,6 +22,7 @@ data class SchoolDayStatus(
     val imminentDeadlineName: String? = null,
     val daysUntilDeadline: Int = -1,
     val alreadyMarkedToday: Boolean = false,
+    val lunchIncluded: Boolean = false,
     val errorMessage: String? = null
 )
 
@@ -39,6 +40,8 @@ class SchoolScheduleManager(private val context: Context) {
         const val KEY_SCHOOL_ICAL_URL = "key_school_ical_url"
         const val KEY_LAST_ATTENDED_DATE = "key_last_attended_school_date"
         const val KEY_CACHED_MINUTES_TODAY = "key_cached_school_minutes_today"
+        const val KEY_CACHED_COUNT_TODAY = "key_cached_school_count_today"
+        const val KEY_CACHED_LUNCH_TODAY = "key_cached_school_lunch_today"
         const val KEY_CACHED_DATE = "key_cached_school_date"
         const val KEY_LOCAL_STREAK = "key_local_streak_count"
         const val KEY_LOCAL_LAST_STUDY_DATE = "key_local_last_study_date"
@@ -150,6 +153,7 @@ class SchoolScheduleManager(private val context: Context) {
                 imminentDeadlineName = urgentDeadline?.summary,
                 daysUntilDeadline = daysUntil,
                 alreadyMarkedToday = alreadyMarked,
+                lunchIncluded = false,
                 errorMessage = "No iCal URL configured"
             )
         }
@@ -169,23 +173,25 @@ class SchoolScheduleManager(private val context: Context) {
 
             val resp = httpClient.newCall(req).execute()
             if (!resp.isSuccessful) {
+                val cachedMins = getCachedMinutesForToday()
                 return@withContext SchoolDayStatus(
-                    scheduledMinutes = getCachedMinutesForToday(),
-                    eventCount = 0,
-                    qualifiesForAttendance = getCachedMinutesForToday() >= MIN_MINUTES_REQUIRED,
+                    scheduledMinutes = cachedMins,
+                    eventCount = getCachedCountForToday(),
+                    qualifiesForAttendance = cachedMins >= MIN_MINUTES_REQUIRED,
                     hasImminentDeadline = hasImminentDeadline,
                     imminentDeadlineName = urgentDeadline?.summary,
                     daysUntilDeadline = daysUntil,
                     alreadyMarkedToday = alreadyMarked,
+                    lunchIncluded = getCachedLunchForToday(),
                     errorMessage = "HTTP ${resp.code} fetching schedule"
                 )
             }
 
             val icsContent = resp.body?.string() ?: ""
-            val (totalMins, count) = parseTotalSchoolMinutesForToday(icsContent)
+            val (totalMins, count, lunchIncluded) = parseTotalSchoolMinutesForToday(icsContent)
 
             // Cache result for today
-            saveCachedMinutesForToday(totalMins)
+            saveCachedMinutesForToday(totalMins, count, lunchIncluded)
 
             return@withContext SchoolDayStatus(
                 scheduledMinutes = totalMins,
@@ -195,18 +201,20 @@ class SchoolScheduleManager(private val context: Context) {
                 imminentDeadlineName = urgentDeadline?.summary,
                 daysUntilDeadline = daysUntil,
                 alreadyMarkedToday = alreadyMarked,
+                lunchIncluded = lunchIncluded,
                 errorMessage = null
             )
         } catch (e: Exception) {
             val cachedMins = getCachedMinutesForToday()
             return@withContext SchoolDayStatus(
                 scheduledMinutes = cachedMins,
-                eventCount = 0,
+                eventCount = getCachedCountForToday(),
                 qualifiesForAttendance = cachedMins >= MIN_MINUTES_REQUIRED,
                 hasImminentDeadline = hasImminentDeadline,
                 imminentDeadlineName = urgentDeadline?.summary,
                 daysUntilDeadline = daysUntil,
                 alreadyMarkedToday = alreadyMarked,
+                lunchIncluded = getCachedLunchForToday(),
                 errorMessage = "Sync failed (${e.localizedMessage ?: "Network error"})"
             )
         }
@@ -214,17 +222,35 @@ class SchoolScheduleManager(private val context: Context) {
 
     /**
      * Parses RFC 5545 iCalendar format and computes sum of event minutes occurring on today.
+     * Incorporates university lunch (11:30 - 12:30, 60 minutes) if classes exist today,
+     * merging overlapping intervals so no minutes are double counted.
      */
-    fun parseTotalSchoolMinutesForToday(icsContent: String): Pair<Int, Int> {
-        val todayCal = Calendar.getInstance()
-        val todayYear = todayCal.get(Calendar.YEAR)
-        val todayMonth = todayCal.get(Calendar.MONTH)
-        val todayDay = todayCal.get(Calendar.DAY_OF_MONTH)
+    fun parseTotalSchoolMinutesForToday(icsContent: String): Triple<Int, Int, Boolean> {
+        val todayStartCal = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 0)
+            set(Calendar.MINUTE, 0)
+            set(Calendar.SECOND, 0)
+            set(Calendar.MILLISECOND, 0)
+        }
+        val todayEndCal = Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, 23)
+            set(Calendar.MINUTE, 59)
+            set(Calendar.SECOND, 59)
+            set(Calendar.MILLISECOND, 999)
+        }
+        val todayStartMs = todayStartCal.timeInMillis
+        val todayEndMs = todayEndCal.timeInMillis
 
-        var totalMinutes = 0
-        var eventCount = 0
+        // Unfold RFC 5545 folded lines (lines starting with space or tab continue previous line)
+        val unfoldedLines = mutableListOf<String>()
+        for (rawLine in icsContent.lines()) {
+            if ((rawLine.startsWith(" ") || rawLine.startsWith("\t")) && unfoldedLines.isNotEmpty()) {
+                unfoldedLines[unfoldedLines.size - 1] = unfoldedLines.last() + rawLine.substring(1)
+            } else {
+                unfoldedLines.add(rawLine)
+            }
+        }
 
-        val lines = icsContent.lines()
         var inEvent = false
         var dtStartStr: String? = null
         var dtEndStr: String? = null
@@ -239,7 +265,10 @@ class SchoolScheduleManager(private val context: Context) {
             timeZone = TimeZone.getDefault()
         }
 
-        for (line in lines) {
+        val rawIntervals = mutableListOf<Pair<Long, Long>>()
+        var classEventCount = 0
+
+        for (line in unfoldedLines) {
             val trimmed = line.trim()
             if (trimmed == "BEGIN:VEVENT") {
                 inEvent = true
@@ -250,20 +279,17 @@ class SchoolScheduleManager(private val context: Context) {
                     val startDate = parseIcalDate(dtStartStr, utcFormat, localFormat, dateOnlyFormat)
                     val endDate = parseIcalDate(dtEndStr, utcFormat, localFormat, dateOnlyFormat)
 
-                    if (startDate != null && endDate != null) {
-                        val startCal = Calendar.getInstance().apply { time = startDate }
-                        val isToday = startCal.get(Calendar.YEAR) == todayYear &&
-                                startCal.get(Calendar.MONTH) == todayMonth &&
-                                startCal.get(Calendar.DAY_OF_MONTH) == todayDay
+                    if (startDate != null && endDate != null && endDate.time > startDate.time) {
+                        // Check if event intersects today
+                        if (startDate.time <= todayEndMs && endDate.time >= todayStartMs) {
+                            val eventStart = maxOf(startDate.time, todayStartMs)
+                            val eventEnd = minOf(endDate.time, todayEndMs)
+                            val durationMins = ((eventEnd - eventStart) / (1000 * 60)).toInt()
 
-                        if (isToday) {
-                            val durationMs = endDate.time - startDate.time
-                            if (durationMs > 0) {
-                                val mins = (durationMs / (1000 * 60)).toInt()
-                                // Cap individual events to 8 hours to avoid corrupted multi-day events
-                                val safeMins = mins.coerceIn(5, 480)
-                                totalMinutes += safeMins
-                                eventCount++
+                            // Accept valid class sessions (between 10m and 8h to ignore corrupt all-day banners)
+                            if (durationMins in 10..480) {
+                                rawIntervals.add(Pair(eventStart, eventEnd))
+                                classEventCount++
                             }
                         }
                     }
@@ -278,7 +304,47 @@ class SchoolScheduleManager(private val context: Context) {
             }
         }
 
-        return Pair(totalMinutes, eventCount)
+        // If the user has classes scheduled today, include university lunch (11:30 - 12:30, 60 minutes).
+        // Attended even if there's a gap before/after classes, but only on days with school.
+        val lunchIncluded = classEventCount > 0
+        if (lunchIncluded) {
+            val lunchStartCal = Calendar.getInstance().apply {
+                set(Calendar.HOUR_OF_DAY, 11)
+                set(Calendar.MINUTE, 30)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
+            val lunchEndCal = Calendar.getInstance().apply {
+                set(Calendar.HOUR_OF_DAY, 12)
+                set(Calendar.MINUTE, 30)
+                set(Calendar.SECOND, 0)
+                set(Calendar.MILLISECOND, 0)
+            }
+            rawIntervals.add(Pair(lunchStartCal.timeInMillis, lunchEndCal.timeInMillis))
+        }
+
+        // Merge overlapping or adjacent intervals so no minutes are double counted
+        rawIntervals.sortBy { it.first }
+        val mergedIntervals = mutableListOf<Pair<Long, Long>>()
+        for (interval in rawIntervals) {
+            if (mergedIntervals.isEmpty()) {
+                mergedIntervals.add(interval)
+            } else {
+                val last = mergedIntervals.last()
+                if (interval.first <= last.second) {
+                    mergedIntervals[mergedIntervals.size - 1] = Pair(last.first, maxOf(last.second, interval.second))
+                } else {
+                    mergedIntervals.add(interval)
+                }
+            }
+        }
+
+        var totalMinutes = 0
+        for (interval in mergedIntervals) {
+            totalMinutes += ((interval.second - interval.first) / (1000 * 60)).toInt()
+        }
+
+        return Triple(totalMinutes, classEventCount, lunchIncluded)
     }
 
     private fun parseIcalDate(
@@ -301,9 +367,11 @@ class SchoolScheduleManager(private val context: Context) {
         }
     }
 
-    private fun saveCachedMinutesForToday(minutes: Int) {
+    private fun saveCachedMinutesForToday(minutes: Int, count: Int, lunchIncluded: Boolean) {
         prefs.edit()
             .putInt(KEY_CACHED_MINUTES_TODAY, minutes)
+            .putInt(KEY_CACHED_COUNT_TODAY, count)
+            .putBoolean(KEY_CACHED_LUNCH_TODAY, lunchIncluded)
             .putString(KEY_CACHED_DATE, getTodayDateStr())
             .apply()
     }
@@ -314,6 +382,24 @@ class SchoolScheduleManager(private val context: Context) {
             prefs.getInt(KEY_CACHED_MINUTES_TODAY, 0)
         } else {
             0
+        }
+    }
+
+    private fun getCachedCountForToday(): Int {
+        val cachedDate = prefs.getString(KEY_CACHED_DATE, "") ?: ""
+        return if (cachedDate == getTodayDateStr()) {
+            prefs.getInt(KEY_CACHED_COUNT_TODAY, 0)
+        } else {
+            0
+        }
+    }
+
+    private fun getCachedLunchForToday(): Boolean {
+        val cachedDate = prefs.getString(KEY_CACHED_DATE, "") ?: ""
+        return if (cachedDate == getTodayDateStr()) {
+            prefs.getBoolean(KEY_CACHED_LUNCH_TODAY, false)
+        } else {
+            false
         }
     }
 
