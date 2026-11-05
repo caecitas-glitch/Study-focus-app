@@ -26,7 +26,7 @@ if sys.stderr is None:
     sys.stderr = open(os.devnull, 'w')
 
 # --- Application Info & Versioning ---
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 GITHUB_REPO = "caecitas-glitch/Study-focus-app"
 
 def parse_version_str(v_str):
@@ -62,7 +62,13 @@ def get_target_schedule_datetime(date_str, time_str="14:00"):
 
 def get_app_dir():
     if getattr(sys, 'frozen', False):
-        return os.path.dirname(os.path.abspath(sys.executable))
+        exe_dir = os.path.dirname(os.path.abspath(sys.executable))
+        # If running from 'dist' folder, check if main workspace root has focus_data.json
+        if os.path.basename(exe_dir).lower() == 'dist':
+            parent = os.path.dirname(exe_dir)
+            if os.path.exists(os.path.join(parent, "focus_data.json")):
+                return parent
+        return exe_dir
     return os.path.dirname(os.path.abspath(__file__))
 
 def sync_live_session_to_companion(is_active=False, subject="#Focus", duration_minutes=0, remaining_seconds=0, is_paused=False, is_overtime=False):
@@ -312,28 +318,61 @@ def launch_spotify_app():
     except Exception:
         return False
 
-# --- Windows Startup Helper ---
+# --- Single Instance Mutex & Windows Startup Helper ---
+_single_instance_mutex = None
+
+def check_single_instance(is_background_mode=False):
+    global _single_instance_mutex
+    try:
+        kernel32 = ctypes.windll.kernel32
+        CreateMutexW = kernel32.CreateMutexW
+        CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_bool, ctypes.c_wchar_p]
+        CreateMutexW.restype = ctypes.c_void_p
+        
+        _single_instance_mutex = CreateMutexW(None, False, "Local\\FocusFlow_SingleInstance_Mutex")
+        if kernel32.GetLastError() == 183: # ERROR_ALREADY_EXISTS
+            # Another instance is already running; exit immediately to prevent duplicates
+            sys.exit(0)
+    except Exception:
+        pass
+
 def get_startup_shortcut_path():
     startup = os.path.join(os.environ.get('APPDATA', ''), r'Microsoft\Windows\Start Menu\Programs\Startup')
     return os.path.join(startup, 'FocusAppStartup.bat')
 
 def set_windows_startup(enable=True):
     path = get_startup_shortcut_path()
+    app_dir = get_app_dir()
+    exe_candidate = os.path.join(app_dir, "focus_app.exe")
+    target_exe = exe_candidate if os.path.exists(exe_candidate) else (os.path.abspath(sys.executable) if getattr(sys, 'frozen', False) else None)
+    creationflags = 0
+    if sys.platform == 'win32':
+        creationflags = subprocess.CREATE_NO_WINDOW
+
     if enable:
-        app_dir = get_app_dir()
-        exe_candidate = os.path.join(app_dir, "focus_app.exe")
-        target_exe = exe_candidate if os.path.exists(exe_candidate) else (os.path.abspath(sys.executable) if getattr(sys, 'frozen', False) else None)
-        
-        # If running as admin, also register an elevated scheduled task to run at logon without UAC prompt!
-        if is_admin() and target_exe:
+        # 1. Prefer Task Scheduler logon task (runs cleanly without duplicate UAC prompt)
+        task_created = False
+        if target_exe:
             try:
-                subprocess.run(
+                res = subprocess.run(
                     f'schtasks /create /tn "FocusAppStartup" /tr "\\"{target_exe}\\" --startup-check" /sc onlogon /rl highest /f',
-                    shell=True, capture_output=True
+                    shell=True, capture_output=True, creationflags=creationflags
                 )
+                if res.returncode == 0:
+                    task_created = True
             except Exception:
                 pass
 
+        # If Task Scheduler succeeded, REMOVE the startup bat file to prevent duplicate launches on boot!
+        if task_created:
+            if os.path.exists(path):
+                try:
+                    os.remove(path)
+                except Exception:
+                    pass
+            return True
+
+        # 2. Fallback to Startup folder bat only if schtasks failed
         if target_exe:
             cmd = f'cd /d "{app_dir}"\nstart "" "{target_exe}" --startup-check'
         else:
@@ -348,7 +387,7 @@ def set_windows_startup(enable=True):
             return False
     else:
         try:
-            subprocess.run('schtasks /delete /tn "FocusAppStartup" /f', shell=True, capture_output=True)
+            subprocess.run('schtasks /delete /tn "FocusAppStartup" /f', shell=True, capture_output=True, creationflags=creationflags)
         except Exception:
             pass
         if os.path.exists(path):
@@ -357,6 +396,48 @@ def set_windows_startup(enable=True):
             except Exception:
                 pass
         return True
+
+def schedule_windows_session_task(target_dt):
+    """Registers a Windows Scheduled Task to launch FocusFlow at the exact target date and time, even if closed."""
+    try:
+        app_dir = get_app_dir()
+        exe_candidate = os.path.join(app_dir, "focus_app.exe")
+        target_exe = exe_candidate if os.path.exists(exe_candidate) else (os.path.abspath(sys.executable) if getattr(sys, 'frozen', False) else None)
+        
+        if target_exe:
+            exec_bin = target_exe
+            exec_args = '--scheduled-session'
+        else:
+            pyw = sys.executable.replace("python.exe", "pythonw.exe")
+            target = os.path.join(app_dir, "Focus_app.pyw")
+            exec_bin = pyw
+            exec_args = f'"{target}" --scheduled-session'
+
+        iso_dt = target_dt.strftime("%Y-%m-%d %H:%M:00")
+        ps_cmd = (
+            f'$Action = New-ScheduledTaskAction -Execute \'{exec_bin}\' -Argument \'{exec_args}\'; '
+            f'$Trigger = New-ScheduledTaskTrigger -Once -At \'{iso_dt}\'; '
+            f'$Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive; '
+            f'Register-ScheduledTask -TaskName "FocusAppScheduledSession" -Action $Action -Trigger $Trigger -Principal $Principal -Force | Out-Null'
+        )
+        creationflags = 0
+        if sys.platform == 'win32':
+            creationflags = subprocess.CREATE_NO_WINDOW
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], creationflags=creationflags, capture_output=True)
+        return True
+    except Exception as e:
+        print(f"Error scheduling Windows task: {e}")
+        return False
+
+def cancel_windows_session_task():
+    """Removes the Windows Scheduled Task for pre-designated session."""
+    try:
+        creationflags = 0
+        if sys.platform == 'win32':
+            creationflags = subprocess.CREATE_NO_WINDOW
+        subprocess.run(["schtasks", "/delete", "/tn", "FocusAppScheduledSession", "/f"], creationflags=creationflags, capture_output=True)
+    except Exception:
+        pass
 
 # --- iCal (.ics) Parser & URL Fetcher ---
 def fetch_ical_from_url(url):
@@ -994,17 +1075,26 @@ class ScheduledWarningToast(tk.Toplevel):
         except Exception:
             pass
 
-        border_color = "#f44336" if urgency == "1m" else ("#ff9800" if urgency == "3m" else "#00bcd4")
+        if urgency == "start":
+            border_color = "#4CAF50"
+            icon_title = "🎯 SCHEDULED SESSION STARTED!"
+            header_text = f"{icon_title} ({minutes}m Lock-In)"
+            desc = f"Pre-scheduled [{subject}] ({minutes}m) has begun!\nFocus mode and app blocker are now active."
+            btn_text = "✓ Let's Lock In!"
+        else:
+            border_color = "#f44336" if urgency == "1m" else ("#ff9800" if urgency == "3m" else "#00bcd4")
+            icon_title = "🚨 1 MINUTE WARNING!" if urgency == "1m" else ("⚠️ 3 MINUTES WARNING!" if urgency == "3m" else "🔔 5 MINUTES WARNING!")
+            header_text = f"{icon_title} (Starts in {remaining_str})"
+            desc = f"Pre-scheduled [{subject}] ({minutes}m) starts at {target_time_str}.\nWrap up your tabs and get ready to lock in!"
+            btn_text = "✓ Got It! I'm Ready"
+
         container = tk.Frame(self, bg="#141422", highlightbackground=border_color, highlightthickness=2)
         container.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
-        icon_title = "🚨 1 MINUTE WARNING!" if urgency == "1m" else ("⚠️ 3 MINUTES WARNING!" if urgency == "3m" else "🔔 5 MINUTES WARNING!")
-        tk.Label(container, text=f"{icon_title} (Starts in {remaining_str})", font=("Segoe UI", 10, "bold"), bg="#141422", fg=border_color).pack(pady=(10, 2))
-
-        desc = f"Pre-scheduled [{subject}] ({minutes}m) starts at {target_time_str}.\nWrap up your tabs and get ready to lock in!"
+        tk.Label(container, text=header_text, font=("Segoe UI", 10, "bold"), bg="#141422", fg=border_color).pack(pady=(10, 2))
         tk.Label(container, text=desc, font=("Segoe UI", 8), bg="#141422", fg="#dddddd", justify="center", wraplength=360).pack(pady=(0, 10))
 
-        btn = tk.Button(container, text="✓ Got It! I'm Ready", font=("Segoe UI", 8, "bold"), bg=border_color, fg="black" if border_color in ("#00bcd4", "#ff9800") else "white", relief="flat", padx=12, pady=3, command=self.destroy)
+        btn = tk.Button(container, text=btn_text, font=("Segoe UI", 8, "bold"), bg=border_color, fg="black" if border_color in ("#00bcd4", "#ff9800", "#4CAF50") else "white", relief="flat", padx=12, pady=3, command=self.destroy)
         btn.pack(pady=(0, 6))
 
         try:
@@ -1133,6 +1223,7 @@ class PreDesignateWindow(tk.Toplevel):
     def cancel_schedule(self):
         self.app.pre_designated_session = {"active": False, "date": "", "time": "", "minutes": 45, "subject": self.app.current_subject}
         self.app.save_data()
+        cancel_windows_session_task()
         self.app.update_pre_designate_ui_status()
         messagebox.showinfo("Schedule Cancelled", "The pre-scheduled focus session has been cancelled.")
         self.destroy()
@@ -1173,6 +1264,7 @@ class PreDesignateWindow(tk.Toplevel):
         target_dt = get_target_schedule_datetime(sched_date, formatted_time)
         now = datetime.now()
         if target_dt and target_dt > now:
+            schedule_windows_session_task(target_dt)
             time_diff = target_dt - now
             h, rem = divmod(int(time_diff.total_seconds()), 3600)
             m, _ = divmod(rem, 60)
@@ -2664,14 +2756,27 @@ class SettingsWindow(tk.Toplevel):
 
 # --- Main Application ---
 class FocusApp:
-    def __init__(self, root, is_startup_mode=False):
+    def __init__(self, root, is_startup_mode=False, is_scheduled_mode=False):
         self.root = root
         self.is_startup_mode = is_startup_mode
+        self.is_scheduled_mode = is_scheduled_mode
         self.root.title("Focus Timer & Study Studio")
         self.root.geometry("480x830")
         self.root.configure(bg="#0a0a10")
         self.root.minsize(480, 830)
         self.root.maxsize(480, 830)
+
+        # Set cool modern window and taskbar icon
+        icon_path = os.path.join(get_app_dir(), "app_icon.ico")
+        if getattr(sys, 'frozen', False) and hasattr(sys, '_MEIPASS'):
+            bundled_icon = os.path.join(sys._MEIPASS, "app_icon.ico")
+            if os.path.exists(bundled_icon):
+                icon_path = bundled_icon
+        if os.path.exists(icon_path):
+            try:
+                self.root.iconbitmap(icon_path)
+            except Exception:
+                pass
 
         # Ensure smooth Windows 11 taskbar restore and window layering
         self.root.bind("<Map>", self.on_window_map)
@@ -2784,8 +2889,12 @@ class FocusApp:
         # Pre-Scheduled Session Warning & Countdown Poller Loop
         self.root.after(2000, self.check_scheduled_session_loop)
 
-        # Handle Pre-Designated Session / Startup Checks
-        if self.is_startup_mode:
+        # Handle Pre-Designated Session / Startup Checks / Scheduled Session
+        if self.is_scheduled_mode:
+            self.root.deiconify()
+            self.root.lift()
+            self.root.after(300, lambda: self.handle_scheduled_session_trigger(is_missed_boot=False))
+        elif self.is_startup_mode:
             self.root.withdraw()
             self.root.after(200, self.handle_startup_deadline_check)
         else:
@@ -2974,6 +3083,53 @@ del "%~f0"
         except Exception:
             pass
 
+    def handle_scheduled_session_trigger(self, is_missed_boot=False):
+        """Immediately starts a scheduled focus session without blocking modal dialogs or termination."""
+        if not self.pre_designated_session or not self.pre_designated_session.get("active", False):
+            return
+
+        sched_date = self.pre_designated_session.get("date", "")
+        sched_time = self.pre_designated_session.get("time", "14:00")
+        mins = self.pre_designated_session.get("minutes", 45)
+        subj = self.pre_designated_session.get("subject", self.current_subject)
+
+        # Mark inactive & cancel Scheduled Task so it does not repeat
+        self.pre_designated_session["active"] = False
+        self.save_data()
+        cancel_windows_session_task()
+        self.update_pre_designate_ui_status()
+
+        # Update subject and timer duration
+        self.selected_minutes = mins
+        self.drag_float_minutes = float(mins)
+        self.current_subject = subj
+        if hasattr(self, 'subj_var'):
+            self.subj_var.set(subj)
+        self.sync_minute_entry()
+        self.draw_clock(mins)
+
+        # Bring window aggressively to front
+        self.root.deiconify()
+        self.root.lift()
+        self.root.attributes("-topmost", True)
+        self.root.after(3000, lambda: self.root.attributes("-topmost", False))
+
+        # Audio alert
+        try:
+            winsound.PlaySound("SystemExclamation", winsound.SND_ALIAS | winsound.SND_ASYNC)
+        except Exception:
+            pass
+
+        # FORCE-START the session immediately!
+        self.start_timer()
+
+        # Non-blocking visual notification banner/toast
+        try:
+            toast_text = f"Offline catch-up ({sched_time})" if is_missed_boot else "NOW"
+            ScheduledWarningToast(self.root, subj, mins, toast_text, sched_time, urgency="start")
+        except Exception:
+            pass
+
     def check_pre_designated_session(self, is_missed_boot=False):
         if not self.pre_designated_session or not self.pre_designated_session.get("active", False):
             return
@@ -2986,41 +3142,7 @@ del "%~f0"
 
         now = datetime.now()
         if now >= target_dt:
-            if not is_admin():
-                relaunch_as_admin()
-                return
-
-            mins = self.pre_designated_session.get("minutes", 45)
-            subj = self.pre_designated_session.get("subject", self.current_subject)
-
-            self.pre_designated_session["active"] = False
-            self.save_data()
-            self.update_pre_designate_ui_status()
-
-            self.selected_minutes = mins
-            self.current_subject = subj
-            self.subj_var.set(subj)
-            self.sync_minute_entry()
-
-            # Bring app window to front
-            self.root.deiconify()
-            self.root.lift()
-
-            # FORCE-START the session immediately!
-            self.start_timer()
-
-            if is_missed_boot:
-                messagebox.showinfo(
-                    "🎯 Scheduled Session Enforced (Missed While Offline)",
-                    f"You committed to a {mins}m focus block for [{subj}] scheduled for {sched_date} at {sched_time}.\n\n"
-                    f"Your computer was off when the scheduled time arrived, so it has started now — no excuses!"
-                )
-            else:
-                messagebox.showinfo(
-                    "🎯 Scheduled Session Starting!",
-                    f"Your scheduled time ({sched_time}) has arrived!\n\n"
-                    f"Starting your {mins}m focus block for [{subj}] now — lock in!"
-                )
+            self.handle_scheduled_session_trigger(is_missed_boot=is_missed_boot)
 
     def check_scheduled_session_loop(self):
         try:
@@ -3036,7 +3158,7 @@ del "%~f0"
 
                     if delta <= 0:
                         # Reached scheduled time
-                        self.check_pre_designated_session(is_missed_boot=False)
+                        self.handle_scheduled_session_trigger(is_missed_boot=False)
                     elif not self.is_running:
                         # Send warnings only when not already running a focus block
                         if delta <= 60:
@@ -3073,27 +3195,32 @@ del "%~f0"
         PreDesignateWindow(self.root, self)
 
     def handle_startup_deadline_check(self):
+        today_str = datetime.now().strftime("%Y-%m-%d")
+        now = datetime.now()
+
         # 1. Check if pre-designated session is due now or was missed while offline
         if self.pre_designated_session and self.pre_designated_session.get("active", False):
             sched_date = self.pre_designated_session.get("date", "")
             sched_time = self.pre_designated_session.get("time", "14:00")
             target_dt = get_target_schedule_datetime(sched_date, sched_time)
-            now = datetime.now()
             if target_dt and now >= target_dt:
-                if not is_admin():
-                    relaunch_as_admin()
-                    return
                 self.root.deiconify()
-                self.check_pre_designated_session(is_missed_boot=True)
+                self.handle_scheduled_session_trigger(is_missed_boot=True)
                 return
             elif target_dt and target_dt.date() == now.date() and target_dt > now:
-                # Session is scheduled for later today: keep main window active (deiconify)
-                self.root.deiconify()
-                return
+                # Session is scheduled for later today: ensure Windows task is registered and stay in background
+                schedule_windows_session_task(target_dt)
 
-        # 2. Otherwise check upcoming deadlines
+        # 2. Prevent duplicate popup if already shown today
+        if self.last_deadline_alert_date == today_str:
+            self.root.destroy()
+            return
+
+        # 3. Otherwise check upcoming deadlines
         upcoming = self.get_deadlines_within_week()
         if upcoming:
+            self.last_deadline_alert_date = today_str
+            self.save_data()
             UpcomingDeadlinesWindow(
                 self.root, 
                 upcoming, 
@@ -3105,10 +3232,8 @@ del "%~f0"
             self.root.destroy()
 
     def show_main_and_focus(self):
-        if not is_admin():
-            relaunch_as_admin()
-            return
         self.root.deiconify()
+        self.root.lift()
         self.set_exam_prep_and_focus()
 
     # --- Streak Multiplier Helper ---
@@ -3147,6 +3272,22 @@ del "%~f0"
                         self.record_completed_session(elapsed_minutes, completed=False, reward_minutes=reward_m)
                     self.is_running = False
                     self.reset_to_setup_view()
+
+            # 2. Synchronize schedule updates made by mobile companion
+            if os.path.exists(self.save_file):
+                mtime = os.path.getmtime(self.save_file)
+                if getattr(self, '_last_save_file_mtime', 0) != mtime:
+                    self._last_save_file_mtime = mtime
+                    with open(self.save_file, "r", encoding="utf-8") as f:
+                        disk_data = json.load(f)
+                    disk_sched = disk_data.get("pre_designated_session")
+                    if disk_sched and disk_sched != self.pre_designated_session:
+                        self.pre_designated_session = disk_sched
+                        self.update_pre_designate_ui_status()
+                        if disk_sched.get("active", False):
+                            t_dt = get_target_schedule_datetime(disk_sched.get("date"), disk_sched.get("time"))
+                            if t_dt and t_dt > datetime.now():
+                                schedule_windows_session_task(t_dt)
         except Exception:
             pass
         finally:
@@ -3976,6 +4117,12 @@ del "%~f0"
             "custom_youtube_url": "",
             "use_custom_youtube": False
         }
+        if not os.path.exists(self.save_file):
+            alt_candidate = os.path.join(os.path.dirname(self.app_dir), "focus_data.json")
+            if os.path.exists(alt_candidate):
+                self.save_file = alt_candidate
+                self.app_dir = os.path.dirname(self.app_dir)
+
         if os.path.exists(self.save_file):
             try:
                 with open(self.save_file, "r", encoding="utf-8") as file:
@@ -4156,6 +4303,11 @@ del "%~f0"
             except Exception:
                 pass
         
+        try:
+            self._last_save_file_mtime = os.path.getmtime(self.save_file)
+        except Exception:
+            pass
+
         if hasattr(self, 'stats_label'):
             self.stats_label.config(text=self.format_total_time())
         self.update_rank_ui()
@@ -4725,6 +4877,11 @@ del "%~f0"
 
 if __name__ == "__main__":
     is_startup = "--startup-check" in sys.argv
+    is_scheduled = "--scheduled-session" in sys.argv
+
+    # Win32 Named Mutex check to strictly prevent duplicate instances or overlapping popups
+    check_single_instance(is_background_mode=(is_startup or is_scheduled))
+
     root = tk.Tk()
-    app = FocusApp(root, is_startup_mode=is_startup)
+    app = FocusApp(root, is_startup_mode=is_startup, is_scheduled_mode=is_scheduled)
     root.mainloop()
