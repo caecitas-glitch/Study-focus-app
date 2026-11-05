@@ -4,6 +4,8 @@ import json
 import time
 import socket
 import threading
+import subprocess
+import re
 from datetime import datetime
 from flask import Flask, jsonify, request, Response, send_file
 
@@ -16,7 +18,12 @@ app = Flask(__name__)
 
 def get_app_dir():
     if getattr(sys, 'frozen', False):
-        return os.path.dirname(sys.executable)
+        exe_dir = os.path.dirname(sys.executable)
+        if os.path.basename(exe_dir).lower() == 'dist':
+            parent = os.path.dirname(exe_dir)
+            if os.path.exists(os.path.join(parent, "focus_data.json")):
+                return parent
+        return exe_dir
     return os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 def get_bundle_dir():
@@ -218,8 +225,8 @@ def get_version():
     apk_path = get_apk_path()
     size_mb = f"{os.path.getsize(apk_path) / (1024 * 1024):.1f} MB" if (apk_path and os.path.exists(apk_path)) else "6.2 MB"
     return jsonify({
-        "versionCode": 14,
-        "versionName": "1.2.1",
+        "versionCode": 15,
+        "versionName": "1.2.2",
         "downloadUrl": "/download",
         "releaseNotes": "✨ School Schedule Lunch Count: Automatically incorporates university lunch (11:30–12:30) on school days towards the 5.5h streak upkeep threshold with smart overlap de-duplication.",
         "apkSize": size_mb,
@@ -319,14 +326,55 @@ def toggle_deadline():
         return jsonify({"success": True})
     return jsonify({"success": False, "error": "Deadline not found"}), 404
 
+def schedule_windows_session_task(target_dt):
+    try:
+        app_dir = get_app_dir()
+        exe_candidate = os.path.join(app_dir, "focus_app.exe")
+        target_exe = exe_candidate if os.path.exists(exe_candidate) else (os.path.abspath(sys.executable) if getattr(sys, 'frozen', False) else None)
+        
+        if target_exe:
+            exec_bin = target_exe
+            exec_args = '--scheduled-session'
+        else:
+            pyw = sys.executable.replace("python.exe", "pythonw.exe")
+            target = os.path.join(app_dir, "Focus_app.pyw")
+            exec_bin = pyw
+            exec_args = f'"{target}" --scheduled-session'
+
+        iso_dt = target_dt.strftime("%Y-%m-%d %H:%M:00")
+        ps_cmd = (
+            f'$Action = New-ScheduledTaskAction -Execute \'{exec_bin}\' -Argument \'{exec_args}\'; '
+            f'$Trigger = New-ScheduledTaskTrigger -Once -At \'{iso_dt}\'; '
+            f'$Principal = New-ScheduledTaskPrincipal -UserId $env:USERNAME -LogonType Interactive; '
+            f'Register-ScheduledTask -TaskName "FocusAppScheduledSession" -Action $Action -Trigger $Trigger -Principal $Principal -Force | Out-Null'
+        )
+        creationflags = 0
+        if sys.platform == 'win32':
+            creationflags = subprocess.CREATE_NO_WINDOW
+        subprocess.run(["powershell", "-NoProfile", "-Command", ps_cmd], creationflags=creationflags, capture_output=True)
+        return True
+    except Exception:
+        return False
+
+def cancel_windows_session_task():
+    try:
+        creationflags = 0
+        if sys.platform == 'win32':
+            creationflags = subprocess.CREATE_NO_WINDOW
+        subprocess.run(["schtasks", "/delete", "/tn", "FocusAppScheduledSession", "/f"], creationflags=creationflags, capture_output=True)
+    except Exception:
+        pass
+
 @app.route("/api/pre_designate", methods=["POST"])
 def pre_designate():
     req = request.get_json(force=True, silent=True) or {}
     data = load_focus_data()
+    sched_date = req.get("date", datetime.now().strftime("%Y-%m-%d"))
+    sched_time = req.get("time", "14:00")
     data["pre_designated_session"] = {
         "active": True,
-        "date": req.get("date", datetime.now().strftime("%Y-%m-%d")),
-        "time": req.get("time", "14:00"),
+        "date": sched_date,
+        "time": sched_time,
         "minutes": int(req.get("minutes", 60)),
         "subject": req.get("subject", "#Focus"),
         "warned_5m": False,
@@ -334,6 +382,20 @@ def pre_designate():
         "warned_1m": False
     }
     save_focus_data(data)
+
+    # Automatically register Windows Scheduled Task so session triggers even if PC app is closed
+    try:
+        cleaned = sched_time.strip().replace('.', ':')
+        m = re.match(r'^(\d{1,2}):(\d{2})$', cleaned)
+        if m:
+            hh, mm = int(m.group(1)), int(m.group(2))
+            d = datetime.strptime(sched_date, "%Y-%m-%d").date()
+            target_dt = datetime(d.year, d.month, d.day, hh, mm, 0)
+            if target_dt > datetime.now():
+                schedule_windows_session_task(target_dt)
+    except Exception:
+        pass
+
     return jsonify({"success": True, "pre_designated": data["pre_designated_session"]})
 
 @app.route("/api/attend_school", methods=["POST"])
