@@ -91,11 +91,10 @@ class FocusBlockerService : Service() {
                 val hasExtension = usageLimitManager.isPackageExtensionActive(currentPkg)
                 val isLeisure = usageLimitManager.isLeisureModeActive()
 
-                // If this package currently has an active extension, keep its timer fresh
+                // If this package currently has an active extension, keep its active timestamp fresh
+                // without resetting elapsed session time so it re-blocks as soon as the extension window ends.
                 if (hasExtension) {
-                    usageLimitManager.resetPackageSessionElapsed(currentPkg)
                     usageLimitManager.setPackageLastActiveTime(currentPkg, now)
-                    packageSessionStartTimes[currentPkg] = now
                     packageLastExitTimes[currentPkg] = 0L
                 }
 
@@ -136,9 +135,7 @@ class FocusBlockerService : Service() {
                         // Update last active time for currentPkg
                         usageLimitManager.setPackageLastActiveTime(currentPkg, now)
 
-                        val bonusMinutes = usageLimitManager.getBonusMinutesForToday(currentPkg)
-                        val totalAllowedMins = sessionLimit + bonusMinutes
-                        val totalAllowedSec = totalAllowedMins * 60L
+                        val totalAllowedSec = sessionLimit * 60L
                         val elapsedSec = usageLimitManager.getPackageSessionElapsed(currentPkg)
 
                         if (elapsedSec >= totalAllowedSec) {
@@ -245,9 +242,9 @@ class FocusBlockerService : Service() {
                 val pkg = intent?.getStringExtra(EXTRA_RAW_PACKAGE)
                 if (!pkg.isNullOrEmpty()) {
                     val now = System.currentTimeMillis()
-                    usageLimitManager.resetPackageSessionElapsed(pkg)
+                    val sessionLimit = usageLimitManager.getSessionLimitForPackage(pkg)
+                    usageLimitManager.setPackageSessionElapsed(pkg, if (sessionLimit > 0) sessionLimit * 60L else 15 * 60L)
                     usageLimitManager.setPackageLastActiveTime(pkg, now)
-                    packageSessionStartTimes[pkg] = now
                     packageLastExitTimes[pkg] = 0L
                     activeMonitoredPackage = null
                     lastActionTimestamp = now
