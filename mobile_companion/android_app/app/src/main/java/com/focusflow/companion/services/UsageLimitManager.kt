@@ -213,17 +213,22 @@ class UsageLimitManager(private val context: Context) {
     }
 
     fun extendAppUsage(pkg: String, minutes: Int = 15) {
+        val sessionLimit = getSessionLimitForPackage(pkg)
         setPackageExtensionUntil(pkg, minutes)
-        resetPackageSessionElapsed(pkg)
+        // Keep session elapsed at or above the session limit so that the exact moment
+        // the 15-minute extension timestamp expires, the blocker immediately re-engages
+        // unless the user takes a full 15-minute break.
+        setPackageSessionElapsed(pkg, if (sessionLimit > 0) sessionLimit * 60L else 15 * 60L)
         setPackageLastActiveTime(pkg, System.currentTimeMillis())
         if (isGeminiOrAiPackage(pkg)) {
+            val bardLimit = getSessionLimitForPackage("com.google.android.apps.bard")
+            val searchLimit = getSessionLimitForPackage("com.google.android.googlequicksearchbox")
             setPackageExtensionUntil("com.google.android.apps.bard", minutes)
             setPackageExtensionUntil("com.google.android.googlequicksearchbox", minutes)
-            resetPackageSessionElapsed("com.google.android.apps.bard")
-            resetPackageSessionElapsed("com.google.android.googlequicksearchbox")
+            setPackageSessionElapsed("com.google.android.apps.bard", if (bardLimit > 0) bardLimit * 60L else 15 * 60L)
+            setPackageSessionElapsed("com.google.android.googlequicksearchbox", if (searchLimit > 0) searchLimit * 60L else 15 * 60L)
         }
         snoozeBedtime(minutes)
-        addBonusMinutes(pkg, minutes)
     }
 
     fun getPackageSessionElapsed(pkg: String): Long {
